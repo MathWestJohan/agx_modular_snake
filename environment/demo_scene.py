@@ -10,7 +10,7 @@ import agxRender
 
 from snakeapp import add, add_event_listener, create_visual, init_camera
 from snakeapp.snake_module import Snake
-from snakeapp.snake_control import SnakeControl
+from snakeapp.gait_controller import GaitController
 
 CONFIG = 'PYPYP'   # 'PPYPP', 'PYPYP' or 'YYPYY'
 
@@ -25,11 +25,7 @@ def build_scene():
     robot.setPosition(0, 0, 0.03)
     add(robot)
 
-    controller = SnakeControl(robot)
-    if CONFIG == 'PYPYP':
-        controller.init_sidewinding(math.pi / 9, math.pi * 2 / 3, 16.0)
-    else:
-        controller.init_turning(math.pi / 9, math.pi * 2 / 3, 8.0, 0.0, 0.0)  # travelling wave on the pitch joints
+    controller = GaitController(robot, situation='flat', auto_slope=True)
     add_event_listener(controller)
 
     init_camera(eye=agx.Vec3(-0.6, -0.8, 0.5), center=agx.Vec3(0.15, 0, 0))
