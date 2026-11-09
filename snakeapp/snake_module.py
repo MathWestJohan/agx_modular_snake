@@ -27,11 +27,15 @@ servo_horn_shape = load_shape(os.path.join(assets, 'servo_horn.obj'))
 
 class Snake(agxSDK.Assembly):
 
-    def __init__(self, config='PYPYP'):
+    def __init__(self, config='PYPYP', wheels=False):
+        """wheels=True models passive wheels (or scales) under the modules: every printed part gets
+        its own material, so the scene can give it low friction along the snake and normal friction
+        sideways (see course_scene.set_friction). Serpentine crawling (YYPYY) needs this."""
         super().__init__()
         if len(config) < 5 or set(config) - set('PY'):
             raise ValueError("config must be at least 5 letters of P/Y, e.g. 'PPYPP', 'PYPYP', 'YYPYY'")
         self.config = config
+        self.wheels = wheels
 
         self.material = agx.Material('snake_material')
         self.material.getBulkMaterial().setDensity(print_density)
@@ -40,7 +44,15 @@ class Snake(agxSDK.Assembly):
 
         self.modules = []
         for i, kind in enumerate(config):
-            module = SnakeModule(self.material, self.servo_material)
+            if wheels:   # own material per part, same density -> same mass
+                materials = []
+                for part in ('cradle', 'bracket'):
+                    material = agx.Material('snake_{}_{}'.format(part, i))
+                    material.getBulkMaterial().setDensity(print_density)
+                    materials.append(material)
+                module = SnakeModule(materials[0], self.servo_material, materials[1])
+            else:
+                module = SnakeModule(self.material, self.servo_material)
             module.setPosition(module_length * i, 0, 0)
             if kind == 'P':  # turn the module 90 deg about the snake's axis -> joint bends up/down
                 module.setRotation(agx.EulerAngles(math.pi / 2, 0, 0))
@@ -54,17 +66,25 @@ class Snake(agxSDK.Assembly):
 
             self.modules.append(module)
             self.add(module)
-      
+
+    def contact_parts(self):
+        """(rigid body, geometry) for every part that touches the ground."""
+        parts = []
+        for module in self.modules:
+            parts.append((module.cradle, module.cradle_geometry))
+            parts.append((module.bracket, module.bracket_geometry))
+        return parts
+
 
 class SnakeModule(agxSDK.Assembly):
   
-  def __init__(self, material, servo_material):
+  def __init__(self, material, servo_material, bracket_material=None):
     super().__init__()
-    
+
     self.cradle_geometry = agxCollide.Geometry(cradle_shape.deepCopy())
     self.cradle_geometry.setMaterial(material)
     self.bracket_geometry = agxCollide.Geometry(bracket_shape.deepCopy())
-    self.bracket_geometry.setMaterial(material)
+    self.bracket_geometry.setMaterial(material if bracket_material is None else bracket_material)
     
     servo = agxCollide.Geometry(servo_body_shape.deepCopy())
     servo.setMaterial(servo_material)

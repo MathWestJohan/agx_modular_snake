@@ -18,12 +18,19 @@ CONFIGS = ['PPYPP', 'PYPYP', 'YYPYY']   # one snake per entry, each in its own l
 LANE_SPACING = 0.8    # distance between the lanes' centre lines (m)
 REVERSE = False       # set True if the snake crawls backwards
 STEER_GAIN = 1.0      # set -1.0 if the snake steers away from the waypoints
+# Per-configuration gains that override STEER_GAIN. Serpentine steers the other way round, and its
+# tail -> head heading swings with every undulation, so a high gain curls it up.
+STEER_GAINS = {'YYPYY': -0.3}
+
+
+def steer_gain(config):
+    return STEER_GAINS.get(config, STEER_GAIN)
 
 # Hill track: (distance along the track, height of the panel top) at every stand, in metres.
 # Straight panels are laid between consecutive points.
 TRACK = [(0.0, 0.0), (0.6, 0.12), (1.2, 0.0), (1.8, 0.15), (2.6, 0.15), (3.2, 0.0)]
 TRACK_WIDTH = 0.45
-TRACK_THICKNESS = 0.01
+TRACK_THICKNESS = 0.05   # thick, so a module pressed hard into a panel cannot tunnel through it
 
 # Zigzag maze: a corridor between two walls of upright plates, starting MAZE_GAP after the track.
 MAZE_GAP = 0.3
@@ -38,6 +45,13 @@ PLATE_THICKNESS = 0.02
 FRICTION_FLOOR = 0.5
 FRICTION_TRACK = 0.6
 FRICTION_PLATES = 0.3
+
+# Passive wheels (or scales) under the modules: low friction along the snake, normal friction sideways.
+# Serpentine crawling (YYPYY) cannot move forward without them; with isotropic friction it only
+# wiggles and drifts. Set True if the real robot gets wheels. The pitch snakes never get wheels:
+# they would roll back down the hills.
+YYPYY_WHEELS = False
+WHEEL_ROLLING_FRICTION = 0.1   # friction along the snake when it has wheels
 
 
 # course building
@@ -101,11 +115,24 @@ def add_zigzag_maze(material, start_x, y=0.0):
 
 
 def set_friction(snake, material, friction):
-    cm = sim().getMaterialManager().getOrCreateContactMaterial(snake.material, material)
-    cm.setFrictionCoefficient(friction)
-    cm.setUseContactAreaApproach(True)
-    cm.setYoungsModulus(3E9)
-    cm.setFrictionModel(agx.IterativeProjectedConeFriction(agx.FrictionModel.DIRECT))
+    manager = sim().getMaterialManager()
+    if not snake.wheels:
+        cm = manager.getOrCreateContactMaterial(snake.material, material)
+        cm.setFrictionCoefficient(friction)
+        cm.setUseContactAreaApproach(True)
+        cm.setYoungsModulus(3E9)
+        cm.setFrictionModel(agx.IterativeProjectedConeFriction(agx.FrictionModel.DIRECT))
+        return
+    # wheels: every part has its own material, so its friction can follow the part's own x axis
+    # (along the snake, for both pitch and yaw modules)
+    for body, geometry in snake.contact_parts():
+        cm = manager.getOrCreateContactMaterial(geometry.getMaterial(), material)
+        cm.setUseContactAreaApproach(True)
+        cm.setYoungsModulus(3E9)
+        cm.setFrictionModel(agx.OrientedBoxFrictionModel(body.getFrame(), agx.Vec3.X_AXIS(),
+                                                         agx.FrictionModel.DIRECT))
+        cm.setFrictionCoefficient(WHEEL_ROLLING_FRICTION, agx.ContactMaterial.PRIMARY_DIRECTION)
+        cm.setFrictionCoefficient(friction, agx.ContactMaterial.SECONDARY_DIRECTION)
 
 
 # snake + behaviour
@@ -131,18 +158,18 @@ class CourseRunner(agxSDK.StepEventListener):
 
         if self.waypoints:
             x, y = self.waypoints[0]
-            if self.controller.steer_towards(x, y, STEER_GAIN) < 0.1:
+            if self.controller.steer_towards(x, y, steer_gain(self.name)) < 0.1:
                 self.waypoints.pop(0)
 
         if time >= self.next_print:
             self.next_print = time + 2.0
-            print('t={:5.1f} s  {:6s} head x={:5.2f} y={:+5.2f} z={:4.2f} m  slope={:+3.0f} deg  gait={}'.format(
+            print('t={:5.1f} s  {:6s} head x={:5.2f} y={:+5.2f} z={:4.2f} m  slope={:+3.0f} bend={:+3.0f} deg  gait={}'.format(
                 time, self.name, head.x(), head.y(), head.z(), math.degrees(self.controller.slope),
-                self.controller.situation))
+                math.degrees(self.controller.bend), self.controller.situation))
 
 
 def add_snake(config, start_x, y, situation, auto_slope, floor, track, plates):
-    robot = Snake(config)
+    robot = Snake(config, wheels=(config == 'YYPYY' and YYPYY_WHEELS))
     robot.setRotation(agx.EulerAngles(0, 0, math.pi))   # module 0 in front, facing +x
     robot.setPosition(start_x, y, 0.03)
     add(robot)
@@ -169,8 +196,10 @@ def lanes():
 
 
 def build_course(hills, maze):
+    """Build the lanes and snakes. Returns the CourseRunner of every snake."""
     floor, track, plates = materials()
     add_floor(floor)
+    runners = []
     for config, y in lanes():
         waypoints = []
         maze_start = None
@@ -190,10 +219,13 @@ def build_course(hills, maze):
             robot, controller = add_snake(config, -0.05, y, 'maze', False, floor, track, plates)
             waypoints = waypoints[1:]
             maze_start = None
-        add_event_listener(CourseRunner(robot, controller, waypoints, maze_start_x=maze_start))
+        runner = CourseRunner(robot, controller, waypoints, maze_start_x=maze_start)
+        add_event_listener(runner)
+        runners.append(runner)
 
     length = (TRACK[-1][0] if hills else 0.0) + (MAZE_GAP + MAZE_SEGMENTS * MAZE_SEGMENT_LENGTH if maze else 0.5)
     init_camera(eye=agx.Vec3(length / 2, -length - 1.5, length * 0.6 + 1.0), center=agx.Vec3(length / 2, 0, 0))
+    return runners
 
 
 # Hills

@@ -1,3 +1,5 @@
+import os
+
 import agx
 import agxIO
 import agxSDK
@@ -9,8 +11,22 @@ import osg
 from agxRender import Color
 from agxUtil import createTrimesh
 
+# Headless mode (no viewer), used by environment/headless_course.py for fast tuning runs.
+# Set the environment variable SNAKEAPP_HEADLESS=1 before importing snakeapp, then call start_headless().
+HEADLESS = os.environ.get('SNAKEAPP_HEADLESS') == '1'
+_headless_sim = None
+
+
+def start_headless() -> agxSDK.Simulation:
+    """Create the simulation that sim() returns when there is no viewer."""
+    global _headless_sim
+    _headless_sim = agxSDK.Simulation()
+    return _headless_sim
+
 
 def sim() -> agxSDK.Simulation:
+    if _headless_sim is not None:
+        return _headless_sim
     return agxPython.getContext().environment.getSimulation()
 
 
@@ -47,6 +63,8 @@ def get_time():
 
 
 def register_additional_scenes(*additional_scenes):
+    if HEADLESS:
+        return
     if len(additional_scenes) > 0:
 
         def add_scene(name):
@@ -76,6 +94,8 @@ def load_shape(path, scale=1.0) -> agxCollide.Trimesh:
 
 def create_visual(obj, diffuse_color: Color = None, ambient_color: Color = None,
                   shininess=None, alpha: float = None):
+    if HEADLESS:
+        return None
     node = agxOSG.createVisual(obj, root())
 
     if diffuse_color is not None:
@@ -104,6 +124,8 @@ def create_sky():
 
 
 def init_camera(eye=agx.Vec3(-25, -25, 25), center=agx.Vec3(), up=agx.Vec3.Z_AXIS()):
+    if HEADLESS:
+        return
     app().setCameraHome(eye, center, up)
 
 
@@ -161,9 +183,8 @@ def create_constraint(**kwds) -> agx.Constraint:
     return c(rb1, f1, rb2, f2)
 
 
-if agxPython.getContext() is None:
+if agxPython.getContext() is None and not HEADLESS:
 
-    import os
     if os.name == "posix":
         agx_dir = os.environ['AGX_DIR']
         agxIO.Environment_instance().getFilePath(agxIO.Environment.RESOURCE_PATH).addFilePath(agx_dir)
