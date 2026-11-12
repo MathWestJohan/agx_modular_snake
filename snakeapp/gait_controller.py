@@ -1,7 +1,7 @@
 import math
 
 from snakeapp import get_contacts
-from snakeapp.snake_control import SnakeControl
+from snakeapp.snake_control import SnakeControl, ERROR, KP, MAX_SPD, REACHED, NOT_REACHED
 
 D = math.radians
 
@@ -44,7 +44,9 @@ GAITS = {
         'flat':     dict(am_p=D(-25), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'uphill':   dict(am_p=D(-25), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'downhill': dict(am_p=D(-25), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
-        'crest':    dict(am_p=D(-35), am_y=0, phi_p=D(120), phi_y=0, phi_py=0, offset_p=D(-10)),
+        # V5 needs the big wave to push its long head over the edge of the 14 deg ramp; with
+        # -35 / -10 it stalled there (V3 never gets that far: it cannot climb the 14 deg ramp)
+        'crest':    dict(am_p=D(-40), am_y=0, phi_p=D(120), phi_y=0, phi_py=0, offset_p=D(-5)),
         'valley':   dict(am_p=D(-35), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'maze':     dict(am_p=D(-20), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
     },
@@ -71,6 +73,10 @@ SLOPE_ON, SLOPE_OFF = D(8), D(4)   # uphill / downhill above SLOPE_ON, back to f
 BEND_ON, BEND_OFF = D(8), D(4)     # crest / valley above BEND_ON, left again below BEND_OFF
 FRONT_MODULES = 2                  # modules at each end used to feel the ground under front and rear
 MIN_DWELL = 3.0                    # s a gait is kept before the automatic switching may change it
+# SnakeControl waits until every joint has reached its target. A servo held at its torque limit
+# (e.g. lifting the heavy V5 head) would then freeze the whole gait, so after this long the wave
+# moves on anyway. A normal step takes about 0.1 s.
+STEP_TIMEOUT = 0.5
 
 
 def gaits_for(config):
@@ -87,6 +93,7 @@ class GaitController(SnakeControl):
         self.gaits = gaits_for(snake.config)
         self.situation = None
         self.steering = 0.0       # rad, extra bend on the yaw joints: + turns one way, - the other
+        self.yaw_sign = getattr(snake, 'yaw_sign', 1)   # -1 if the snake leads with an arm (V5)
         self.direction = 1        # -1 runs the wave the other way, so the snake goes backwards
         self.head = 0             # index of the module that leads; set to -1 if it crawls the other way
 
@@ -97,6 +104,8 @@ class GaitController(SnakeControl):
         self.bend = 0.0           # ground_front - ground_rear: < 0 crest, > 0 valley
         self._next_check = 0.0
         self._switched_at = -MIN_DWELL
+        self._time = 0.0
+        self._stepped_at = 0.0
 
         self.set_situation(situation)
 
@@ -111,7 +120,7 @@ class GaitController(SnakeControl):
         d = self.direction
         t = self.sample_time      # keep the wave going where it was instead of restarting it
         self.control_group_init(g['am_p'], g['am_y'], d * g['phi_p'], d * g['phi_y'], d * g['phi_py'],
-                                CYCLE, g['offset_p'], g['offset_y'] + self.steering)
+                                CYCLE, g['offset_p'], g['offset_y'] + self.yaw_sign * self.steering)
         self.sample_time = t
         for i in range(len(self.snake.modules)):
             self.desire_angle[i] = self.am[i] * math.sin(2 * math.pi * t / CYCLE + self.phi[i]) + self.offset[i]
@@ -135,7 +144,7 @@ class GaitController(SnakeControl):
         base = self.gaits[self.situation].get('offset_y', 0.0)
         for i in range(len(self.snake.modules)):
             if not self.is_pitch(i):
-                self.offset[i] = base + self.steering
+                self.offset[i] = base + self.yaw_sign * self.steering
 
     def steer_towards(self, x, y, gain=1.0):
         """Steer so the snake heads for the point (x, y). Returns the distance to it.
@@ -208,7 +217,30 @@ class GaitController(SnakeControl):
             return now
         return 'uphill' if s > 0 else 'downhill'
 
+    @staticmethod
+    def set_hinge_angle(hinge, ref_angle, is_fixed_angle):
+        """As SnakeControl, but a joint that holds an angle (steering, a joint without a wave) keeps
+        closing in on it inside the ERROR band instead of stopping up to 4 deg short. Otherwise a
+        small steering correction does nothing at all."""
+        error = ref_angle - hinge.getAngle()
+        speed = max(-MAX_SPD, min(MAX_SPD, KP * error))
+        if abs(error) > ERROR:
+            hinge.getMotor1D().setSpeed(speed)
+            return NOT_REACHED
+        if is_fixed_angle:
+            hinge.getMotor1D().setSpeed(speed)
+        return REACHED
+
+    def servo_control(self):
+        reached = 0
+        for i, module in enumerate(self.snake.modules):
+            reached += self.set_hinge_angle(module.hinge, self.desire_angle[i], self.fixed_angle[i])
+        if reached == len(self.snake.modules) or self._time - self._stepped_at > STEP_TIMEOUT:
+            self.onestep_angle()
+            self._stepped_at = self._time
+
     def pre(self, time):
+        self._time = time
         if self.auto_slope and time >= self._next_check:
             self._next_check = time + 0.25
             self.measure_terrain()

@@ -4,7 +4,9 @@ Use it to tune the gaits in snakeapp/gait_controller.py. From the project root:
     & "$env:PYTHONHOME\\python.exe" -B environment\\headless_course.py --configs PPYPP PYPYP --scene hills --time 600
 
 Options: --scene hills|maze|course|flat, --time <simulated seconds>, --wheels (YYPYY gets passive
-wheels), --quiet (only the gait switches and the summary).
+wheels), --design v5|v3 (robot design, default snake_module.DESIGN), --cradles SSSSS (V5: short or
+long cradle per module from the head), --head-mass / --tail-mass <kg> (V5, teeth included),
+--friction <mu> (snake on the track), --quiet (only the gait switches and the summary).
 """
 import argparse
 import math
@@ -24,6 +26,7 @@ import snakeapp
 simulation = snakeapp.start_headless()
 
 import course_scene
+from snakeapp import snake_module
 
 STALL_DISTANCE = 0.02   # m of forward progress that ends a stall
 SAMPLE = 0.5            # s between progress samples
@@ -46,7 +49,7 @@ def build_flat():
     course_scene.add_floor(floor)
     runners = []
     for config, y in course_scene.lanes():
-        robot, controller = course_scene.add_snake(config, -0.1, y, 'flat', True, floor, track, plates)
+        robot, controller = course_scene.add_snake(config, -0.06, y, 'flat', True, floor, track, plates)
         runner = course_scene.CourseRunner(robot, controller, [(3.0, y)])
         course_scene.add_event_listener(runner)
         runners.append(runner)
@@ -92,7 +95,22 @@ def main():
     parser.add_argument('--wheels', action='store_true', help='give YYPYY passive wheels')
     parser.add_argument('--quiet', action='store_true', help='no progress lines every 2 s')
     parser.add_argument('--steer-gain', type=float, help='steering gain for every snake (default: per config)')
+    parser.add_argument('--design', choices=['v5', 'v3'], help='robot design (default: snake_module.DESIGN)')
+    parser.add_argument('--cradles', help="V5: 'S' or 'L' cradle per module from the head, e.g. LSSSS")
+    parser.add_argument('--head-mass', type=float, help='V5: head mass in kg, teeth included')
+    parser.add_argument('--tail-mass', type=float, help='V5: tail mass in kg, teeth included')
+    parser.add_argument('--friction', type=float, help='friction snake/track (default course_scene.FRICTION_TRACK)')
     args = parser.parse_args()
+
+    snake_module.HEAD_MASS = args.head_mass
+    snake_module.TAIL_MASS = args.tail_mass
+    if args.friction is not None:
+        course_scene.FRICTION_TRACK = args.friction
+
+    if args.design:
+        snake_module.DESIGN = args.design
+    if args.cradles:
+        course_scene.Snake = lambda config, **kw: snake_module.Snake(config, cradles=args.cradles, **kw)
 
     course_scene.CONFIGS = args.configs
     course_scene.YYPYY_WHEELS = args.wheels
@@ -119,8 +137,11 @@ def main():
             for p in progress:
                 p.sample(t)
 
-    print('\n{} scene, {:.0f} s simulated in {:.0f} s{}'.format(
-        args.scene, args.time, clock.time() - start, ', YYPYY with wheels' if args.wheels else ''))
+    robot = runners[0].robot
+    print('\n{} scene, {:.0f} s simulated in {:.0f} s, design {}{} ({:.3f} kg){}'.format(
+        args.scene, args.time, clock.time() - start, robot.design,
+        ' cradles ' + args.cradles if args.cradles else '', robot.mass(),
+        ', YYPYY with wheels' if args.wheels else ''))
     for p in progress:
         print(p.summary())
 

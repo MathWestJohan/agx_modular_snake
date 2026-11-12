@@ -17,10 +17,14 @@ from snakeapp.gait_controller import GaitController
 CONFIGS = ['PPYPP', 'PYPYP', 'YYPYY']   # one snake per entry, each in its own lane
 LANE_SPACING = 0.8    # distance between the lanes' centre lines (m)
 REVERSE = False       # set True if the snake crawls backwards
-STEER_GAIN = 1.0      # set -1.0 if the snake steers away from the waypoints
+# A positive steer() turns the pitch snakes clockwise (right), so the gain must be negative to turn
+# toward a waypoint on the left. With +1 they steered away: heading errors grew until they left the
+# track, and they stalled at the first maze corner.
+STEER_GAIN = -1.0
 # Per-configuration gains that override STEER_GAIN. Serpentine steers the other way round, and its
 # tail -> head heading swings with every undulation, so a high gain curls it up.
 STEER_GAINS = {'YYPYY': -0.3}
+LOOKAHEAD = 0.25      # m along the path ahead of the head that the snakes steer at
 
 
 def steer_gain(config):
@@ -31,6 +35,7 @@ def steer_gain(config):
 TRACK = [(0.0, 0.0), (0.6, 0.12), (1.2, 0.0), (1.8, 0.15), (2.6, 0.15), (3.2, 0.0)]
 TRACK_WIDTH = 0.45
 TRACK_THICKNESS = 0.05   # thick, so a module pressed hard into a panel cannot tunnel through it
+START_X = -0.06          # x of the snakes' front ends at the start, just before the track
 
 # Zigzag maze: a corridor between two walls of upright plates, starting MAZE_GAP after the track.
 MAZE_GAP = 0.3
@@ -117,11 +122,12 @@ def add_zigzag_maze(material, start_x, y=0.0):
 def set_friction(snake, material, friction):
     manager = sim().getMaterialManager()
     if not snake.wheels:
-        cm = manager.getOrCreateContactMaterial(snake.material, material)
-        cm.setFrictionCoefficient(friction)
-        cm.setUseContactAreaApproach(True)
-        cm.setYoungsModulus(3E9)
-        cm.setFrictionModel(agx.IterativeProjectedConeFriction(agx.FrictionModel.DIRECT))
+        for snake_material in [snake.material] + snake.end_materials:
+            cm = manager.getOrCreateContactMaterial(snake_material, material)
+            cm.setFrictionCoefficient(friction)
+            cm.setUseContactAreaApproach(True)
+            cm.setYoungsModulus(3E9)
+            cm.setFrictionModel(agx.IterativeProjectedConeFriction(agx.FrictionModel.DIRECT))
         return
     # wheels: every part has its own material, so its friction can follow the part's own x axis
     # (along the snake, for both pitch and yaw modules)
@@ -145,8 +151,33 @@ class CourseRunner(agxSDK.StepEventListener):
         self.robot = robot
         self.controller = controller
         self.waypoints = list(waypoints)
+        start = robot.modules[0].cradle.getPosition()
+        self.previous = (start.x(), start.y())   # the path runs from here through the waypoints
         self.maze_start_x = maze_start_x
         self.next_print = 0.0
+
+    def carrot(self, px, py):
+        """Pure pursuit: the point LOOKAHEAD ahead of the head's projection on the waypoint path.
+        Steering at it keeps the snake on the line between the waypoints, not just heading for the
+        next one (which, far away, hardly notices a snake drifting toward the track edge)."""
+        while True:   # drop the waypoints the head has passed
+            (ax, ay), (bx, by) = self.previous, self.waypoints[0]
+            dx, dy = bx - ax, by - ay
+            length = math.hypot(dx, dy)
+            t = ((px - ax) * dx + (py - ay) * dy) / length ** 2 if length > 1e-9 else 1.0
+            if t < 1.0:
+                break
+            self.previous = self.waypoints.pop(0)
+            if not self.waypoints:
+                return None
+        s = max(t, 0.0) * length + LOOKAHEAD
+        points = [self.previous] + self.waypoints
+        for (ax, ay), (bx, by) in zip(points[:-1], points[1:]):
+            segment = math.hypot(bx - ax, by - ay)
+            if s <= segment:
+                return ax + (bx - ax) * s / segment, ay + (by - ay) * s / segment
+            s -= segment
+        return points[-1]
 
     def pre(self, time):
         head = self.robot.modules[0].cradle.getPosition()
@@ -157,9 +188,11 @@ class CourseRunner(agxSDK.StepEventListener):
             self.controller.set_situation('maze')
 
         if self.waypoints:
-            x, y = self.waypoints[0]
-            if self.controller.steer_towards(x, y, steer_gain(self.name)) < 0.1:
-                self.waypoints.pop(0)
+            target = self.carrot(head.x(), head.y())
+            if target is None:   # past the last waypoint: go straight on
+                self.controller.steer(0.0)
+            else:
+                self.controller.steer_towards(target[0], target[1], steer_gain(self.name))
 
         if time >= self.next_print:
             self.next_print = time + 2.0
@@ -168,10 +201,11 @@ class CourseRunner(agxSDK.StepEventListener):
                 math.degrees(self.controller.bend), self.controller.situation))
 
 
-def add_snake(config, start_x, y, situation, auto_slope, floor, track, plates):
+def add_snake(config, front_x, y, situation, auto_slope, floor, track, plates):
+    """A snake facing +x with its front end (the head) at front_x, just above the floor."""
     robot = Snake(config, wheels=(config == 'YYPYY' and YYPYY_WHEELS))
     robot.setRotation(agx.EulerAngles(0, 0, math.pi))   # module 0 in front, facing +x
-    robot.setPosition(start_x, y, 0.03)
+    robot.setPosition(front_x - robot.nose, y, robot.bottom + 0.004)
     add(robot)
     set_friction(robot, floor, FRICTION_FLOOR)
     set_friction(robot, track, FRICTION_TRACK)
@@ -214,9 +248,9 @@ def build_course(hills, maze):
         waypoints.append((last_x + 0.4, last_y))   # a point just past the finish
 
         if hills:   # start in front of the track; switch to the maze gait at the maze
-            robot, controller = add_snake(config, -0.1, y, 'flat', True, floor, track, plates)
+            robot, controller = add_snake(config, START_X, y, 'flat', True, floor, track, plates)
         else:       # start at the maze entrance, already in the maze gait
-            robot, controller = add_snake(config, -0.05, y, 'maze', False, floor, track, plates)
+            robot, controller = add_snake(config, -0.01, y, 'maze', False, floor, track, plates)
             waypoints = waypoints[1:]
             maze_start = None
         runner = CourseRunner(robot, controller, waypoints, maze_start_x=maze_start)

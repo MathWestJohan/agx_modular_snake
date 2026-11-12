@@ -22,7 +22,7 @@ def build_scene():
     add(ground)
 
     robot = Snake(CONFIG)
-    robot.setPosition(0, 0, 0.03)
+    robot.setPosition(0, 0, robot.bottom + 0.004)
     add(robot)
 
     controller = GaitController(robot, situation='flat', auto_slope=True)
