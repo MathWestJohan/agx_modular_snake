@@ -7,7 +7,8 @@ D = math.radians
 
 # SnakeControl moves the wave on by 1/12 of a cycle each time EVERY joint has reached its target
 # (within 4 deg). The 2*pi*t/period term then cancels, so a period has no effect: the gait runs as
-# fast as the servos can follow (about 1 cycle/s). Speed and step length come from the amplitude.
+# fast as the servos can follow (V5 on flat ground: PPYPP about 0.65 cycles/s, PYPYP about 0.35, where
+# the servos are slowed by their torque limit). Speed and step length come from the amplitude.
 CYCLE = 12.0
 
 # Wave directions (the phase grows toward the tail when phi > 0):
@@ -55,7 +56,11 @@ GAITS = {
         'flat':     dict(am_p=D(-35), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'uphill':   dict(am_p=D(-35), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'downhill': dict(am_p=D(-30), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
-        'crest':    dict(am_p=D(-30), am_y=0, phi_p=D(120), phi_y=0, phi_py=0, offset_p=D(-10)),
+        # At the robot's real weight (0.75 kg, the extra at the two ends) the middle pitch servo is at
+        # its torque limit most of the time: it reaches -30 deg but only about +14. With -30 / -10
+        # the snake then stuck just below the second hilltop; -40 / -5 gets it over for every split
+        # of the weight between head and tail (-35 / -5 and -45 / 0 also work, -40 / -10 does not).
+        'crest':    dict(am_p=D(-40), am_y=0, phi_p=D(120), phi_y=0, phi_py=0, offset_p=D(-5)),
         'valley':   dict(am_p=D(-35), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'maze':     dict(am_p=D(-20), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),   # more rolls it over in the corridor
     },

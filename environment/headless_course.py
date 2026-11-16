@@ -5,8 +5,9 @@ Use it to tune the gaits in snakeapp/gait_controller.py. From the project root:
 
 Options: --scene hills|maze|course|flat, --time <simulated seconds>, --wheels (YYPYY gets passive
 wheels), --design v5|v3 (robot design, default snake_module.DESIGN), --cradles SSSSS (V5: short or
-long cradle per module from the head), --head-mass / --tail-mass <kg> (V5, teeth included),
---friction <mu> (snake on the track), --quiet (only the gait switches and the summary).
+long cradle per module from the head), --head-mass / --tail-mass <kg> (V5, teeth included; default
+snake_module.HEAD_MASS / TAIL_MASS, 0 = bare printed plastic), --friction <mu> (snake on the track),
+--quiet (only the gait switches and the summary).
 """
 import argparse
 import math
@@ -102,8 +103,10 @@ def main():
     parser.add_argument('--friction', type=float, help='friction snake/track (default course_scene.FRICTION_TRACK)')
     args = parser.parse_args()
 
-    snake_module.HEAD_MASS = args.head_mass
-    snake_module.TAIL_MASS = args.tail_mass
+    if args.head_mass is not None:
+        snake_module.HEAD_MASS = args.head_mass or None   # 0 = bare printed plastic
+    if args.tail_mass is not None:
+        snake_module.TAIL_MASS = args.tail_mass or None
     if args.friction is not None:
         course_scene.FRICTION_TRACK = args.friction
 

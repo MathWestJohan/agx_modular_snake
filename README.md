@@ -35,3 +35,9 @@ The snake stands on the tips of the teeth, 5 mm below the modules. After changin
 `python snakeapp/convert_snake_to_mesh.py v5` to remake the meshes the simulation loads. The head and
 tail masses (`HEAD_MASS`, `TAIL_MASS` in `snake_module.py`) default to printed plastic only; set them
 to the weighed values, electronics and battery included.
+
+## Robot firmware
+
+The robot's own sketches are in `esp32_code/` (motor ESP32, sensor ESP32 and the camera). `firmware/`
+holds the motor and sensor sketches with the simulation's gaits added, see `firmware/README.md`.
+After tuning gaits here, run `python firmware/sync_from_sim.py` to copy them into the firmware.

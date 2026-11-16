@@ -22,11 +22,16 @@ servo_density = 1380
 #   'v3'  the earlier bare modules (assets/ssv3), cradle end first
 DESIGN = 'v5'
 
-# V5 head and tail masses in kg, teeth included (e.g. weighed with the electronics or battery in
-# them). None: printed plastic only, at print_density (head about 0.108 kg, tail about 0.085 kg).
+# V5 head and tail masses in kg, teeth included. None: printed plastic only, at print_density
+# (head about 0.108 kg, tail about 0.085 kg, the whole snake 0.613 kg).
 # They sit far out on long levers, so they set how hard the servos must work.
-HEAD_MASS = None
-TAIL_MASS = None
+#
+# The real robot weighs about 0.75 kg: the head carries an ESP32, the camera and the two IR sensors,
+# the tail an ESP32 and the Servo2 board. The 0.137 kg above the bare plastic is split evenly here,
+# which gives 0.75 kg in total. The split itself is NOT measured: weigh the head and the tail and
+# put the real values here. The gaits were checked for 0.150 / 0.180 and 0.200 / 0.130 as well.
+HEAD_MASS = 0.177
+TAIL_MASS = 0.153
 
 
 def _shape(folder, name):

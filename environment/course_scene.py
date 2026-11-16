@@ -177,7 +177,12 @@ class CourseRunner(agxSDK.StepEventListener):
             if s <= segment:
                 return ax + (bx - ax) * s / segment, ay + (by - ay) * s / segment
             s -= segment
-        return points[-1]
+        # Near the end of the path: carry on along the last segment. A carrot that stops at the last
+        # point ends up right beside the head, the steering goes to full lock, and the full bend on
+        # top of the wave rolls the snake over.
+        if segment < 1e-9:
+            return points[-1]
+        return bx + (bx - ax) * s / segment, by + (by - ay) * s / segment
 
     def pre(self, time):
         head = self.robot.modules[0].cradle.getPosition()
