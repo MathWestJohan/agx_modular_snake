@@ -32,13 +32,13 @@ static const SimGaitTable SIM_GAIT_TABLES[] = {
     {true, -25.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // downhill
     {true, -40.0f, 0.0f, 120.0f, 0.0f, 0.0f, -5.0f, 0.0f},   // crest
     {true, -35.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // valley
-    {true, -20.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // maze
+    {true, -15.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // maze
   }},
   {"PYPYP", {
     {true, -35.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // flat
     {true, -35.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // uphill
     {true, -30.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // downhill
-    {true, -30.0f, 0.0f, 120.0f, 0.0f, 0.0f, -10.0f, 0.0f},   // crest
+    {true, -40.0f, 0.0f, 120.0f, 0.0f, 0.0f, -5.0f, 0.0f},   // crest
     {true, -35.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // valley
     {true, -20.0f, 0.0f, 120.0f, 0.0f, 0.0f, 0.0f, 0.0f},   // maze
   }},
