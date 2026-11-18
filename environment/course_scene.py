@@ -12,9 +12,22 @@ import agxRender
 
 from snakeapp import add, add_event_listener, create_visual, init_camera, sim, register_additional_scenes
 from snakeapp.snake_module import Snake
-from snakeapp.gait_controller import GaitController
+from snakeapp.gait_controller import GaitController, SLITHER_AMPLITUDE
+from snakeapp.run_logger import RunLogger
 
-CONFIGS = ['PPYPP', 'PYPYP', 'YYPYY']   # one snake per entry, each in its own lane
+# One snake per entry, each in its own lane. 'PYPYP+slither' is a PYPYP that also weaves from side
+# to side while it crawls (gait_controller.set_slither); it works for PPYPP too.
+CONFIGS = ['PPYPP', 'PYPYP', 'YYPYY']
+SLITHER = SLITHER_AMPLITUDE   # rad, amplitude of the yaw joints of the '+slither' snakes
+# The slither wave swings the line tail -> head that the steering measures the heading from. Without
+# smoothing the steering chases that swing to full lock, and full lock on top of both waves rolled the
+# snake over. So while it slithers it steers on the heading error averaged over about this long
+# (s; one PYPYP wave cycle takes about 1.8 s). Where it does not slither it steers like the plain snake.
+SLITHER_STEER_TAU = 3.0
+# ... and for this long after it stops slithering (s): the body still swings for a couple of wave
+# cycles, and steering on the raw heading then jumped to 13 - 18 deg just as the big hilltop gait
+# started, which rolled it over.
+SLITHER_STEER_AFTER = 6.0
 LANE_SPACING = 0.8    # distance between the lanes' centre lines (m)
 REVERSE = False       # set True if the snake crawls backwards
 # A positive steer() turns the pitch snakes clockwise (right), so the gain must be negative to turn
@@ -25,10 +38,25 @@ STEER_GAIN = -1.0
 # tail -> head heading swings with every undulation, so a high gain curls it up.
 STEER_GAINS = {'YYPYY': -0.3}
 LOOKAHEAD = 0.25      # m along the path ahead of the head that the snakes steer at
+# Look-ahead in the maze, where it differs. PPYPP has one yaw joint in the middle, so its stiff rear
+# half cuts every corner and its last joint hooks on the inside corner. Turning in later (a shorter
+# look-ahead) swings the head wide and leaves the rear room: with 0.25 it jammed at the first corner,
+# with 0.15 it got through for every weight split. PYPYP is the other way round (0.25 works, 0.15 jams).
+# YYPYY (with wheels) got through with 0.15 but not with 0.25.
+MAZE_LOOKAHEADS = {'PPYPP': 0.15, 'YYPYY': 0.15}
+
+# Folder for one data log per snake (snakeapp/run_logger.py), or None. For the viewer; the headless
+# runner has --log. Look at the files with environment/analyze_run.py.
+LOG_DIR = None
 
 
-def steer_gain(config):
-    return STEER_GAINS.get(config, STEER_GAIN)
+def base_config(name):
+    """'PYPYP+slither' -> 'PYPYP'"""
+    return name.split('+')[0]
+
+
+def steer_gain(name):
+    return STEER_GAINS.get(base_config(name), STEER_GAIN)
 
 # Hill track: (distance along the track, height of the panel top) at every stand, in metres.
 # Straight panels are laid between consecutive points.
@@ -145,9 +173,9 @@ def set_friction(snake, material, friction):
 class CourseRunner(agxSDK.StepEventListener):
 
     # Steers along the waypoints, switches to the maze gait at the maze and prints progress
-    def __init__(self, robot, controller, waypoints, maze_start_x=None):
+    def __init__(self, robot, controller, waypoints, maze_start_x=None, name=None):
         super().__init__(agxSDK.StepEventListener.PRE_STEP)
-        self.name = robot.config
+        self.name = name or robot.config   # the lane's name, e.g. 'PYPYP+slither'
         self.robot = robot
         self.controller = controller
         self.waypoints = list(waypoints)
@@ -155,6 +183,9 @@ class CourseRunner(agxSDK.StepEventListener):
         self.previous = (start.x(), start.y())   # the path runs from here through the waypoints
         self.maze_start_x = maze_start_x
         self.next_print = 0.0
+        self._steer = 0.0        # smoothed steering of a slithering snake, rad
+        self._last_time = None
+        self._slithered_at = -math.inf   # last time the snake was slithering
 
     def carrot(self, px, py):
         """Pure pursuit: the point LOOKAHEAD ahead of the head's projection on the waypoint path.
@@ -170,7 +201,10 @@ class CourseRunner(agxSDK.StepEventListener):
             self.previous = self.waypoints.pop(0)
             if not self.waypoints:
                 return None
-        s = max(t, 0.0) * length + LOOKAHEAD
+        look = LOOKAHEAD
+        if self.controller.situation == 'maze':
+            look = MAZE_LOOKAHEADS.get(self.robot.config, LOOKAHEAD)
+        s = max(t, 0.0) * length + look
         points = [self.previous] + self.waypoints
         for (ax, ay), (bx, by) in zip(points[:-1], points[1:]):
             segment = math.hypot(bx - ax, by - ay)
@@ -198,16 +232,27 @@ class CourseRunner(agxSDK.StepEventListener):
                 self.controller.steer(0.0)
             else:
                 self.controller.steer_towards(target[0], target[1], steer_gain(self.name))
+            if self.controller.slithering:
+                self._slithered_at = time
+            if time - self._slithered_at < SLITHER_STEER_AFTER:   # see SLITHER_STEER_TAU
+                dt = time - self._last_time if self._last_time is not None else 0.0
+                self._steer += (self.controller.steering - self._steer) * min(1.0, dt / SLITHER_STEER_TAU)
+                self.controller.steer(self._steer)
+            else:
+                self._steer = self.controller.steering
+        self._last_time = time
 
         if time >= self.next_print:
             self.next_print = time + 2.0
-            print('t={:5.1f} s  {:6s} head x={:5.2f} y={:+5.2f} z={:4.2f} m  slope={:+3.0f} bend={:+3.0f} deg  gait={}'.format(
+            print('t={:5.1f} s  {:13s} head x={:5.2f} y={:+5.2f} z={:4.2f} m  slope={:+3.0f} bend={:+3.0f} deg  gait={}'.format(
                 time, self.name, head.x(), head.y(), head.z(), math.degrees(self.controller.slope),
                 math.degrees(self.controller.bend), self.controller.situation))
 
 
-def add_snake(config, front_x, y, situation, auto_slope, floor, track, plates):
-    """A snake facing +x with its front end (the head) at front_x, just above the floor."""
+def add_snake(name, front_x, y, situation, auto_slope, floor, track, plates):
+    """A snake facing +x with its front end (the head) at front_x, just above the floor.
+    name: its joints, e.g. 'PYPYP', plus '+slither' to make it weave from side to side."""
+    config = base_config(name)
     robot = Snake(config, wheels=(config == 'YYPYY' and YYPYY_WHEELS))
     robot.setRotation(agx.EulerAngles(0, 0, math.pi))   # module 0 in front, facing +x
     robot.setPosition(front_x - robot.nose, y, robot.bottom + 0.004)
@@ -219,7 +264,11 @@ def add_snake(config, front_x, y, situation, auto_slope, floor, track, plates):
     controller = GaitController(robot, situation=situation, auto_slope=auto_slope)
     if REVERSE:
         controller.reverse()
+    if name.endswith('+slither'):
+        controller.set_slither(SLITHER)
     add_event_listener(controller)
+    if LOG_DIR:
+        add_event_listener(RunLogger(robot, controller, os.path.join(LOG_DIR, name + '.csv')))
     return robot, controller
 
 
@@ -258,7 +307,7 @@ def build_course(hills, maze):
             robot, controller = add_snake(config, -0.01, y, 'maze', False, floor, track, plates)
             waypoints = waypoints[1:]
             maze_start = None
-        runner = CourseRunner(robot, controller, waypoints, maze_start_x=maze_start)
+        runner = CourseRunner(robot, controller, waypoints, maze_start_x=maze_start, name=config)
         add_event_listener(runner)
         runners.append(runner)
 
@@ -269,7 +318,7 @@ def build_course(hills, maze):
 
 # Hills
 def build_scene():
-    register_additional_scenes('build_scene_maze', 'build_scene_course')
+    register_additional_scenes('build_scene_maze', 'build_scene_course', 'build_scene_slither')
     build_course(hills=True, maze=False)
 
 # Maze
@@ -278,4 +327,10 @@ def build_scene_maze():
 
 # Both
 def build_scene_course():
+    build_course(hills=True, maze=True)
+
+# Both, PYPYP side by side with a PYPYP that slithers (weaves from side to side while it crawls)
+def build_scene_slither():
+    global CONFIGS
+    CONFIGS = ['PYPYP', 'PYPYP+slither']
     build_course(hills=True, maze=True)

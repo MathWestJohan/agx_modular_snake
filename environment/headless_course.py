@@ -7,9 +7,12 @@ Options: --scene hills|maze|course|flat, --time <simulated seconds>, --wheels (Y
 wheels), --design v5|v3 (robot design, default snake_module.DESIGN), --cradles SSSSS (V5: short or
 long cradle per module from the head), --head-mass / --tail-mass <kg> (V5, teeth included; default
 snake_module.HEAD_MASS / TAIL_MASS, 0 = bare printed plastic), --friction <mu> (snake on the track),
---quiet (only the gait switches and the summary).
+--quiet (only the gait switches and the summary), --slither <deg> (amplitude of the '+slither' snakes,
+e.g. --configs PYPYP PYPYP+slither), --log <folder> (one data log per snake plus run.json, for
+environment/analyze_run.py).
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -27,21 +30,12 @@ import snakeapp
 simulation = snakeapp.start_headless()
 
 import course_scene
-from snakeapp import snake_module
+from snakeapp import gait_controller, snake_module
+from snakeapp.run_logger import RunLogger, rolled_over
 
 STALL_DISTANCE = 0.02   # m of forward progress that ends a stall
 SAMPLE = 0.5            # s between progress samples
-
-
-def rolled_over(robot):
-    """True if the snake lies on its side (pitch joints would then bend sideways)."""
-    for kind, module in zip(robot.config, robot.modules):
-        axis = module.cradle.getFrame().transformVectorToWorld(agx.Vec3(0, 0, -1))   # hinge axis
-        if kind == 'P' and abs(axis.z()) > 0.7:
-            return True
-        if kind == 'Y' and abs(axis.z()) < 0.3:
-            return True
-    return False
+ROLL_SECONDS = 1.0      # s on its side before it counts as rolled over
 
 
 def build_flat():
@@ -51,7 +45,7 @@ def build_flat():
     runners = []
     for config, y in course_scene.lanes():
         robot, controller = course_scene.add_snake(config, -0.06, y, 'flat', True, floor, track, plates)
-        runner = course_scene.CourseRunner(robot, controller, [(3.0, y)])
+        runner = course_scene.CourseRunner(robot, controller, [(3.0, y)], name=config)
         course_scene.add_event_listener(runner)
         runners.append(runner)
     return runners
@@ -66,6 +60,7 @@ class Progress:
         self.longest_stall = 0.0
         self.finished_at = None
         self.rolled_at = None
+        self.tipped_since = None   # time the snake went over 45 deg sideways, while it stays there
 
     def sample(self, t):
         x = self.runner.robot.modules[0].cradle.getPosition().x()
@@ -75,17 +70,29 @@ class Progress:
         self.longest_stall = max(self.longest_stall, t - self.progress_t)
         if self.finished_at is None and x >= self.finish_x:
             self.finished_at = t
-        if self.rolled_at is None and rolled_over(self.runner.robot):
-            self.rolled_at = t
+        # Rolled over = on its side for at least ROLL_SECONDS. A snake turning hard can tip past 45 deg
+        # for a moment and come back, which is not a roll-over.
+        if rolled_over(self.runner.robot):
+            if self.tipped_since is None:
+                self.tipped_since = t
+            if self.rolled_at is None and t - self.tipped_since >= ROLL_SECONDS:
+                self.rolled_at = self.tipped_since
+        else:
+            self.tipped_since = None
 
     def summary(self):
         head = self.runner.robot.modules[0].cradle.getPosition()
-        return '{:6s} head x={:5.2f} y={:+5.2f} z={:4.2f}  best x={:5.2f}  finish (x>={:.2f}): {}  ' \
+        return '{:13s} head x={:5.2f} y={:+5.2f} z={:4.2f}  best x={:5.2f}  finish (x>={:.2f}): {}  ' \
                'longest stall: {:4.0f} s  rolled over: {}'.format(
                    self.runner.name, head.x(), head.y(), head.z(), self.best_x, self.finish_x,
                    '{:5.0f} s'.format(self.finished_at) if self.finished_at is not None else 'no',
                    self.longest_stall,
                    '{:.0f} s'.format(self.rolled_at) if self.rolled_at is not None else 'no')
+
+    def result(self):
+        """The same as summary(), as numbers for run.json."""
+        return dict(best_x=round(self.best_x, 3), finish_x=round(self.finish_x, 3), finished_at=self.finished_at,
+                    longest_stall=round(self.longest_stall, 1), rolled_at=self.rolled_at)
 
 
 def main():
@@ -101,6 +108,8 @@ def main():
     parser.add_argument('--head-mass', type=float, help='V5: head mass in kg, teeth included')
     parser.add_argument('--tail-mass', type=float, help='V5: tail mass in kg, teeth included')
     parser.add_argument('--friction', type=float, help='friction snake/track (default course_scene.FRICTION_TRACK)')
+    parser.add_argument('--slither', type=float, help="yaw amplitude in degrees of the '+slither' snakes")
+    parser.add_argument('--log', help='folder for one data log (CSV) per snake and run.json')
     args = parser.parse_args()
 
     if args.head_mass is not None:
@@ -115,6 +124,8 @@ def main():
     if args.cradles:
         course_scene.Snake = lambda config, **kw: snake_module.Snake(config, cradles=args.cradles, **kw)
 
+    if args.slither is not None:
+        course_scene.SLITHER = math.radians(args.slither)
     course_scene.CONFIGS = args.configs
     course_scene.YYPYY_WHEELS = args.wheels
     if args.steer_gain is not None:
@@ -129,6 +140,12 @@ def main():
         for runner in runners:
             runner.next_print = math.inf
     progress = [Progress(runner) for runner in runners]
+    loggers = []
+    if args.log:
+        for runner in runners:
+            logger = RunLogger(runner.robot, runner.controller, os.path.join(args.log, runner.name + '.csv'))
+            course_scene.add_event_listener(logger)
+            loggers.append(logger)
 
     start = clock.time()
     next_sample = 0.0
@@ -147,6 +164,23 @@ def main():
         ', YYPYY with wheels' if args.wheels else ''))
     for p in progress:
         print(p.summary())
+
+    for logger in loggers:
+        logger.close()
+    if args.log:
+        degrees = {config: {situation: {k: round(math.degrees(v), 2) for k, v in gait.items()}
+                            for situation, gait in table.items()}
+                   for config, table in gait_controller.GAITS.items()
+                   if config in [course_scene.base_config(n) for n in args.configs]}
+        run = dict(scene=args.scene, time=args.time, design=robot.design, mass=round(robot.mass(), 3),
+                   head_mass=snake_module.HEAD_MASS, tail_mass=snake_module.TAIL_MASS, wheels=args.wheels,
+                   friction_track=course_scene.FRICTION_TRACK, lookahead=course_scene.LOOKAHEAD,
+                   slither_deg=round(math.degrees(course_scene.SLITHER), 1), gaits_deg=degrees,
+                   wave_hz=dict(gait_controller.WAVE_HZ),
+                   snakes={p.runner.name: p.result() for p in progress})
+        with open(os.path.join(args.log, 'run.json'), 'w') as out:
+            json.dump(run, out, indent=2)
+        print('log: {}  (python environment/analyze_run.py {})'.format(args.log, args.log))
 
 
 if __name__ == '__main__':
