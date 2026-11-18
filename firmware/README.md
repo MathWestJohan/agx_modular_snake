@@ -18,10 +18,11 @@ The robot is pitch-yaw-pitch-yaw-pitch, which is the simulation's `PYPYP` snake.
 |---|---|---|---|
 | Caterpillar wave direction | head → tail | tail → head moves the snake head first | tail → head by default (`CATERPILLAR_WAVE` in `snake_motor.ino`) |
 | Amplitude | 20° slider default | 35° flat and uphill, 30° downhill, 20° in the maze | from the simulation's table when "Sim gait" is on |
-| Hilltops | nothing | "crest" gait: 30° wave plus every pitch joint bent 10° down | pitch offset in the order to the motor board |
+| Hilltops | nothing | "crest" gait: 40° wave plus every pitch joint bent 5° down (tuned for the 0.75 kg robot) | pitch offset in the order to the motor board |
 | Choosing the gait | by hand | from the slope of the body | from both IMUs and the joint angles |
+| Steering on a hilltop or in a valley | up to 30° | at most 10° in the crest and valley gaits (full lock on top of their big wave rolled it over) | the same, `SIM_BIG_WAVE_STEER_DEG` |
 
-Phase lag (120°) already matched. Speed stays on the slider: the simulated servos, carrying the snake's weight, managed about 0.35 wave cycles per second, so 0.3–0.5 Hz is the range to try.
+Phase lag (120°) already matched. Speed stays on the slider. The simulation now runs the wave on the clock exactly like `snake_motor.ino` does, and uses 0.55 Hz for this snake (it crossed the hills at every weight split; 0.45 and 0.7 Hz did too, the faster the quicker). The simulated servo keeps its full speed up to its torque limit, while a real one slows down under load, so start at the default 0.5 Hz and only go faster if the joints still reach their full swing.
 
 The wave direction is the one change that alters what the robot does with "Sim gait" off. **Check it first** (below).
 
