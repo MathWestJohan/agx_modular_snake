@@ -200,6 +200,8 @@ const float    SIM_BEND_TAU_S   = 20.0;       // crest/valley: the slope is comp
                                               // over about this many seconds (not tested in the simulation yet)
 const bool     SIM_MAZE_WITH_IR = true;       // IR auto-steer on + flat ground -> the simulation's maze gait
 const uint32_t TERRAIN_MS       = 250;        // gait choice 4 times a second, as in the simulation
+const float    SIM_BIG_WAVE_STEER_DEG = 10.0; // steering limit in the crest / valley gaits: full lock on
+                                              // top of their big wave rolled the simulated snake over
 
 // ---- Timing ----
 const uint32_t IMU_MS       = 20;             // 50 Hz
@@ -631,6 +633,12 @@ float orderLag() {
   return fabsf(simMode() == VERTICAL ? simNow()->phiP : simNow()->phiY);
 }
 float orderPitchOffset() { return simActive() ? simNow()->offsetP : 0.0f; }
+float orderSteer() {
+  float s = steerTarget();
+  if (simActive() && (simSituation == SIT_CREST || simSituation == SIT_VALLEY))
+    s = constrain(s, -SIM_BIG_WAVE_STEER_DEG, SIM_BIG_WAVE_STEER_DEG);
+  return s;
+}
 
 // Which way is up, seen from the body part that carries this IMU (x forward, y left, z up).
 // Needs a calibrated IMU: otherwise "level" is only a guess.
@@ -694,7 +702,7 @@ void linkSend(const char* body) {
 void sendOrders() {
   char body[80];
   snprintf(body, sizeof(body), "S,%d,%.1f,%.2f,%.0f,%d,%.1f,%.1f",                // SIM: from the table if on
-           requestedMode, orderAmp(), frequencyHz, orderLag(), travelDir, steerTarget(), orderPitchOffset());
+           requestedMode, orderAmp(), frequencyHz, orderLag(), travelDir, orderSteer(), orderPitchOffset());
   linkSend(body);
 }
 
