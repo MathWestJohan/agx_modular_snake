@@ -17,12 +17,12 @@ The robot is pitch-yaw-pitch-yaw-pitch, which is the simulation's `PYPYP` snake.
 | | `esp32_code/` | Simulation | Here |
 |---|---|---|---|
 | Caterpillar wave direction | head → tail | tail → head moves the snake head first | tail → head by default (`CATERPILLAR_WAVE` in `snake_motor.ino`) |
-| Amplitude | 20° slider default | 35° flat and uphill, 30° downhill, 20° in the maze | from the simulation's table when "Sim gait" is on |
+| Amplitude | 20° slider default | 35° flat and uphill, 30° downhill, 45° at the foot of a hill, 20° in the maze | from the simulation's table when "Sim gait" is on |
 | Hilltops | nothing | "crest" gait: 40° wave plus every pitch joint bent 5° down (tuned for the 0.75 kg robot) | pitch offset in the order to the motor board |
 | Choosing the gait | by hand | from the slope of the body | from both IMUs and the joint angles |
 | Steering on a hilltop or in a valley | up to 30° | at most 10° in the crest and valley gaits (full lock on top of their big wave rolled it over) | the same, `SIM_BIG_WAVE_STEER_DEG` |
 
-Phase lag (120°) already matched. Speed stays on the slider. The simulation now runs the wave on the clock exactly like `snake_motor.ino` does, and uses 0.55 Hz for this snake (it crossed the hills at every weight split; 0.45 and 0.7 Hz did too, the faster the quicker). The simulated servo keeps its full speed up to its torque limit, while a real one slows down under load, so start at the default 0.5 Hz and only go faster if the joints still reach their full swing.
+Phase lag (120°) already matched. Speed stays on the slider. The simulation runs the wave on the clock exactly like `snake_motor.ino` does, and uses **0.45 Hz** for this snake. Its servos are modelled as DC motors at 5 V, which have less torque the faster they turn: with a 35° valley wave at 0.55 Hz the snake got stuck at the foot of the 14° ramp in 2 of 4 weight settings; with 45° at 0.45 Hz it finished in all 4. Start at 0.45–0.5 Hz on the robot.
 
 The wave direction is the one change that alters what the robot does with "Sim gait" off. **Check it first** (below).
 
@@ -86,12 +86,12 @@ Four times a second, as in the simulation:
 1. **Slope.** Each IMU gives the tilt of its own end, which rocks with the wave. The joint angles from the motor board turn that into the slope of the whole body: the line from the last joint to the first, which is what the simulation measures. Two IMUs give two answers, which are averaged.
 2. **Bend.** The simulation feels a hilltop through the ground contacts under the snake. The robot cannot, so it uses how much the slope has changed: the slope minus its own average over about 20 s (`SIM_BEND_TAU_S`).
 3. **Choice.** The simulation's thresholds: uphill or downhill beyond ±8°, flat within ±4°, crest or valley when the bend passes ±8°. A gait is kept for at least 3 s.
-4. **Maze.** With "Auto-steer (IR)" on and flat ground, the simulation's maze gait is used: a 20° wave, because the bigger one rolled the snake over between the walls.
+4. **Maze.** With line following on, the camera having seen the tape line in the last 5 s (`SIM_MAZE_LINE_MS`) and flat ground, the simulation's maze gait is used: a 20° wave, because the bigger one rolled the snake over between the walls. The tape line only runs through the maze, so seeing it means the snake is in the maze. Turn line following on for the whole course run: on the hills it sees no line and goes straight.
 
 ## Not tested, and known gaps
 
 - **Nothing here has run on the robot.** It compiles, and the PC tests pass.
-- **Crest and valley detection** (step 2 above) is new and has not been tried in the simulation. It reacts with a delay, and stops reacting if the snake is stuck on the hilltop for longer than about 20 s. Set `SIM_CREST_VALLEY = false` to switch it off. In the simulation the crest gait mattered for getting over the second hilltop.
+- **Crest and valley detection** (step 2 above) has now been run in the simulation (`headless_course.py --sensing robot`, with simulated IMUs and the realistic servo model). The slope it measures is good (about 3° rms), but the bend misses most valleys: the snake climbs onto a ramp so slowly that the 20 s average keeps up. On the real course in the simulation, PPYPP finished in 3 of 4 weight settings and PYPYP (this robot) in only 2. A proposed rule, the slope of the front half of the body (head IMU) minus that of the rear half (tail IMU), averaged over one wave cycle, finished in all 4 for both (`--bend-rule halves`, `snakeapp/robot_sensing.py`). It is not in this sketch yet. Set `SIM_CREST_VALLEY = false` to switch crest/valley detection off.
 - **Tilt while crawling** comes from accelerometers alone. Knocks show up as tilt errors. The slope is averaged over several seconds, which should cover it.
 - **The simulation's robot is not weighed.** Its head and tail masses are guesses without the camera, batteries and boards. Heavier ends change how well it climbs.
 - **Serpentine and sidewind** are not from the simulation: it has no such gaits for this joint layout. They are unchanged.
