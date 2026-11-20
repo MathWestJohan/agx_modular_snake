@@ -49,6 +49,12 @@ MAZE_LOOKAHEADS = {'PPYPP': 0.15, 'YYPYY': 0.15}
 # runner has --log. Look at the files with environment/analyze_run.py.
 LOG_DIR = None
 
+# How the snakes choose their gait on the hills: 'sim' from the world (module positions and ground
+# contacts), or 'robot' the way the robot's sensor ESP32 does it, from its two accelerometers and the
+# commanded joint angles (snakeapp/robot_sensing.py). With 'robot' the maze gait comes on, as on the
+# robot, when the camera sees the tape line, which only runs through the maze.
+SENSING = 'sim'
+
 
 def base_config(name):
     """'PYPYP+slither' -> 'PYPYP'"""
@@ -59,8 +65,20 @@ def steer_gain(name):
     return STEER_GAINS.get(base_config(name), STEER_GAIN)
 
 # Hill track: (distance along the track, height of the panel top) at every stand, in metres.
-# Straight panels are laid between consecutive points.
-TRACK = [(0.0, 0.0), (0.6, 0.12), (1.2, 0.0), (1.8, 0.15), (2.6, 0.15), (3.2, 0.0)]
+# Straight panels are laid between consecutive points. Two layouts:
+#   'plateau'     the real course: an 11 deg hill 0.12 m high, then a 14 deg ramp up to a 0.8 m flat
+#                 top 0.15 m high and down again
+#   'flat-start'  a variant: a flat 0.8 m panel first, then the same two hills with a sharp second top
+TRACKS = {
+    'plateau':    [(0.0, 0.0), (0.6, 0.12), (1.2, 0.0), (1.8, 0.15), (2.6, 0.15), (3.2, 0.0)],
+    'flat-start': [(0.0, 0.0), (0.8, 0.0), (1.4, 0.12), (2.0, 0.0), (2.6, 0.15), (3.2, 0.0)],
+}
+TRACK_LAYOUT = 'plateau'   # used when a scene does not name its own
+
+
+def track_points(layout=None):
+    """The points of a track layout (default TRACK_LAYOUT)."""
+    return TRACKS[layout or TRACK_LAYOUT]
 TRACK_WIDTH = 0.45
 TRACK_THICKNESS = 0.05   # thick, so a module pressed hard into a panel cannot tunnel through it
 START_X = -0.06          # x of the snakes' front ends at the start, just before the track
@@ -74,10 +92,16 @@ MAZE_WIDTH = 0.15             # free width of the corridor
 PLATE_HEIGHT = 0.2
 PLATE_THICKNESS = 0.02
 
-# Friction between the snake and the scenes
+# Friction between the snake's printed PLA parts and the scenes (estimates)
 FRICTION_FLOOR = 0.5
 FRICTION_TRACK = 0.6
 FRICTION_PLATES = 0.3
+# Friction of the V5 teeth, printed in rubber-like TPU (snake_module.RUBBER_TEETH), on every surface.
+# The snake stands on the tips of its teeth, so this sets most of its grip. Estimate: TPU 95A on
+# hardwood 0.70 - 0.80 (TPU 85A 0.80 - 0.90, plastic glides about 0.30) in QIDI's table,
+# https://qidi3d.com/fr/blogs/print-lab/tpu-furniture-feet-stop-sliding. Measure it on the real
+# track: tilt a board with the snake on it until it slides, friction = tan(angle).
+TEETH_FRICTION = 0.75
 
 # Passive wheels (or scales) under the modules: low friction along the snake, normal friction sideways.
 # Serpentine crawling (YYPYY) cannot move forward without them; with isotropic friction it only
@@ -104,9 +128,11 @@ def add_floor(material):
             agxRender.Color(0.55, 0.55, 0.55, 1.0))
 
 
-def add_hill_track(material, y=0.0, start_x=0.0):
-    """One tilted panel between each pair of TRACK points. Returns the x where the track ends."""
-    for (s0, z0), (s1, z1) in zip(TRACK[:-1], TRACK[1:]):
+def add_hill_track(material, y=0.0, start_x=0.0, points=None):
+    """One tilted panel between each pair of track points (default: track_points()). Returns the x
+    where the track ends."""
+    points = points or track_points()
+    for (s0, z0), (s1, z1) in zip(points[:-1], points[1:]):
         length = math.hypot(s1 - s0, z1 - z0)
         angle = math.atan2(z1 - z0, s1 - s0)
         # put the panel's top surface through both points
@@ -114,7 +140,7 @@ def add_hill_track(material, y=0.0, start_x=0.0):
         cz = (z0 + z1) / 2 - math.cos(angle) * TRACK_THICKNESS / 2
         add_box((length / 2, TRACK_WIDTH / 2, TRACK_THICKNESS / 2), (cx, y, cz),
                 agx.EulerAngles(0, -angle, 0), material, agxRender.Color(0.15, 0.15, 0.15, 1.0))
-    return start_x + TRACK[-1][0]
+    return start_x + points[-1][0]
 
 
 def add_zigzag_maze(material, start_x, y=0.0):
@@ -150,9 +176,12 @@ def add_zigzag_maze(material, start_x, y=0.0):
 def set_friction(snake, material, friction):
     manager = sim().getMaterialManager()
     if not snake.wheels:
-        for snake_material in [snake.material] + snake.end_materials:
+        pairs = [(m, friction) for m in [snake.material] + snake.end_materials]
+        if getattr(snake, 'teeth_material', None) is not None:
+            pairs.append((snake.teeth_material, TEETH_FRICTION))
+        for snake_material, mu in pairs:
             cm = manager.getOrCreateContactMaterial(snake_material, material)
-            cm.setFrictionCoefficient(friction)
+            cm.setFrictionCoefficient(mu)
             cm.setUseContactAreaApproach(True)
             cm.setYoungsModulus(3E9)
             cm.setFrictionModel(agx.IterativeProjectedConeFriction(agx.FrictionModel.DIRECT))
@@ -221,10 +250,12 @@ class CourseRunner(agxSDK.StepEventListener):
     def pre(self, time):
         head = self.robot.modules[0].cradle.getPosition()
 
-        if self.maze_start_x is not None and head.x() > self.maze_start_x \
-                and self.controller.situation != 'maze':
-            self.controller.auto_slope = False
-            self.controller.set_situation('maze')
+        if self.maze_start_x is not None and head.x() > self.maze_start_x:
+            if self.controller.sensing == 'robot':
+                self.controller.line_seen = True   # the robot picks the maze gait itself
+            elif self.controller.situation != 'maze':
+                self.controller.auto_slope = False
+                self.controller.set_situation('maze')
 
         if self.waypoints:
             target = self.carrot(head.x(), head.y())
@@ -261,7 +292,7 @@ def add_snake(name, front_x, y, situation, auto_slope, floor, track, plates):
     set_friction(robot, track, FRICTION_TRACK)
     set_friction(robot, plates, FRICTION_PLATES)
 
-    controller = GaitController(robot, situation=situation, auto_slope=auto_slope)
+    controller = GaitController(robot, situation=situation, auto_slope=auto_slope, sensing=SENSING)
     if REVERSE:
         controller.reverse()
     if name.endswith('+slither'):
@@ -283,8 +314,10 @@ def lanes():
     return [(config, first + k * LANE_SPACING) for k, config in enumerate(CONFIGS)]
 
 
-def build_course(hills, maze):
-    """Build the lanes and snakes. Returns the CourseRunner of every snake."""
+def build_course(hills, maze, layout=None):
+    """Build the lanes and snakes, on track layout `layout` (default TRACK_LAYOUT). Returns the
+    CourseRunner of every snake."""
+    points = track_points(layout)
     floor, track, plates = materials()
     add_floor(floor)
     runners = []
@@ -292,7 +325,7 @@ def build_course(hills, maze):
         waypoints = []
         maze_start = None
         if hills:
-            track_end = add_hill_track(track, y)
+            track_end = add_hill_track(track, y, points=points)
             waypoints.append((track_end, y))
         if maze:
             maze_start = track_end + MAZE_GAP if hills else 0.0
@@ -311,14 +344,15 @@ def build_course(hills, maze):
         add_event_listener(runner)
         runners.append(runner)
 
-    length = (TRACK[-1][0] if hills else 0.0) + (MAZE_GAP + MAZE_SEGMENTS * MAZE_SEGMENT_LENGTH if maze else 0.5)
+    length = (points[-1][0] if hills else 0.0) + (MAZE_GAP + MAZE_SEGMENTS * MAZE_SEGMENT_LENGTH if maze else 0.5)
     init_camera(eye=agx.Vec3(length / 2, -length - 1.5, length * 0.6 + 1.0), center=agx.Vec3(length / 2, 0, 0))
     return runners
 
 
 # Hills
 def build_scene():
-    register_additional_scenes('build_scene_maze', 'build_scene_course', 'build_scene_slither')
+    register_additional_scenes('build_scene_maze', 'build_scene_course', 'build_scene_slither',
+                               'build_scene_flat_start')
     build_course(hills=True, maze=False)
 
 # Maze
@@ -334,3 +368,7 @@ def build_scene_slither():
     global CONFIGS
     CONFIGS = ['PYPYP', 'PYPYP+slither']
     build_course(hills=True, maze=True)
+
+# Both, on the 'flat-start' track layout
+def build_scene_flat_start():
+    build_course(hills=True, maze=True, layout='flat-start')

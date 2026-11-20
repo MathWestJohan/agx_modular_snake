@@ -1,7 +1,7 @@
 import math
 
 from snakeapp import get_contacts
-from snakeapp.snake_control import SnakeControl, KP, MAX_SPD
+from snakeapp.snake_control import SnakeControl, drive_servo
 
 D = math.radians
 
@@ -16,11 +16,13 @@ D = math.radians
 # about 40 % faster. sample_time still counts in twelfths of a cycle (CYCLE), so onestep_angle() works
 # as before (firmware/test/compare_with_sim.py uses it).
 CYCLE = 12.0
-# Wave cycles per second. The simulated servo keeps its full speed right up to its torque limit; a real
-# hobby servo slows down as the load grows, so these stay at about half the servo's no-load speed at
-# the biggest wave (faster ran faster still in the simulation: PYPYP 0.7 and PPYPP 1.3 crossed the
-# hills in 160 - 177 s and 90 - 98 s). On the robot this is the dashboard's Speed (Hz) slider.
-WAVE_HZ = {'PPYPP': 0.8, 'PYPYP': 0.55, 'YYPYY': 0.6}
+# Wave cycles per second. On the robot this is the dashboard's Speed (Hz) slider.
+# With the DC-motor servo model (snake_control.SERVOS) a servo has less torque the faster it turns, so
+# a faster wave is not simply faster. PYPYP at 0.75 kg (the real course, rubber teeth): with a
+# 35 deg valley wave at 0.55 Hz it stuck at the foot of the 14 deg ramp in 2 of 4 weight settings;
+# with the 45 deg valley wave at 0.45 Hz it finished in all 4 (473 - 579 s).
+# (With the earlier rigid servo model PYPYP 0.7 and PPYPP 1.3 still got faster.)
+WAVE_HZ = {'PPYPP': 0.8, 'PYPYP': 0.45, 'YYPYY': 0.6}
 
 # Wave directions (the phase grows toward the tail when phi > 0):
 #  - pitch (vertical, caterpillar) wave, phi_p > 0: the hump starts at the tail and travels to the
@@ -74,7 +76,10 @@ GAITS = {
         # the snake then stuck just below the second hilltop; -40 / -5 gets it over for every split
         # of the weight between head and tail (-35 / -5 and -45 / 0 also work, -40 / -10 does not).
         'crest':    dict(am_p=D(-40), am_y=0, phi_p=D(120), phi_y=0, phi_py=0, offset_p=D(-5)),
-        'valley':   dict(am_p=D(-35), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
+        # With the DC-motor servo model the middle servo is too slow under load to finish a 35 deg
+        # stroke at the foot of the 14 deg ramp (it reached only -22.4 of -35 deg), and the snake
+        # stuck there in this gait. A 45 deg wave (at 0.45 Hz, WAVE_HZ) gets it over.
+        'valley':   dict(am_p=D(-45), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),
         'maze':     dict(am_p=D(-20), am_y=0, phi_p=D(120), phi_y=0, phi_py=0),   # more rolls it over in the corridor
     },
     # 4 yaw joints: side-to-side (serpentine) wave head -> tail, the pitch joint holds straight
@@ -139,7 +144,10 @@ def gaits_for(config):
 
 class GaitController(SnakeControl):
 
-    def __init__(self, snake, situation='flat', auto_slope=False):
+    def __init__(self, snake, situation='flat', auto_slope=False, sensing='sim'):
+        """sensing: how auto_slope finds the terrain. 'sim' = from the world (module positions and
+        ground contacts); 'robot' = as the robot does, from its two accelerometers and the commanded
+        joint angles (robot_sensing.py), with the maze gait while the camera sees the line."""
         super().__init__(snake)
         self.gaits = gaits_for(snake.config)
         self.hz = wave_hz(snake.config)   # wave cycles per second
@@ -156,6 +164,20 @@ class GaitController(SnakeControl):
         self.ground_front = 0.0   # filtered ground slope under the front / rear modules, rad
         self.ground_rear = 0.0
         self.bend = 0.0           # ground_front - ground_rear: < 0 crest, > 0 valley
+        # slope and bend above = what the gait choice uses. With sensing='robot' these are the robot's
+        # estimates, and the world's values (and the gait the 'sim' rule would want) are kept here:
+        self.sim_slope = 0.0
+        self.sim_bend = 0.0
+        self.sim_wanted = situation
+        self.wanted = situation   # the gait the rule wants now (before MIN_DWELL)
+        self.line_seen = False    # sensing='robot': the camera sees the tape line (only in the maze)
+        self.sensing = sensing
+        self.robot_sensing = None
+        if sensing == 'robot':
+            from snakeapp.robot_sensing import RobotSensing
+            self.robot_sensing = RobotSensing(snake, self)
+        elif sensing != 'sim':
+            raise ValueError("sensing must be 'sim' or 'robot'")
         self._next_check = 0.0
         self._switched_at = -MIN_DWELL
         self._time = None         # time of the last control step
@@ -262,7 +284,7 @@ class GaitController(SnakeControl):
         head, tail = self._ends()
         horizontal = math.hypot(head.x() - tail.x(), head.y() - tail.y())
         raw = math.atan2(head.z() - tail.z(), horizontal)
-        self.slope = 0.8 * self.slope + 0.2 * raw   # smooth out the wave's own up/down motion
+        self.sim_slope = 0.8 * self.sim_slope + 0.2 * raw   # smooth out the wave's own up/down motion
 
         # The ground itself, felt through the contacts, so the gait's own bending does not count.
         chain = self._chain()
@@ -273,7 +295,8 @@ class GaitController(SnakeControl):
             self.ground_front = 0.7 * self.ground_front + 0.3 * front
         if rear is not None:
             self.ground_rear = 0.7 * self.ground_rear + 0.3 * rear
-        self.bend = self.ground_front - self.ground_rear
+        self.sim_bend = self.ground_front - self.ground_rear
+        self.slope, self.bend = self.sim_slope, self.sim_bend
         return self.slope, self.bend
 
     def choose_situation(self):
@@ -294,10 +317,10 @@ class GaitController(SnakeControl):
         return 'uphill' if s > 0 else 'downhill'
 
     @staticmethod
-    def set_hinge_angle(hinge, ref_angle, is_fixed_angle=False):
-        """Drive the joint toward ref_angle like a position servo: speed proportional to the error,
-        up to the servo's top speed, all the time (no dead band, so nothing drifts past its target)."""
-        hinge.getMotor1D().setSpeed(max(-MAX_SPD, min(MAX_SPD, KP * (ref_angle - hinge.getAngle()))))
+    def set_hinge_angle(hinge, ref_angle, is_fixed_angle=False, dt=None):
+        """Drive the joint toward ref_angle the way the servo's own controller does, every step (no
+        dead band, so nothing drifts past its target). The servo model: snake_control.SERVOS."""
+        drive_servo(hinge, ref_angle, dt)
 
     def servo_control(self, dt):
         """Move the wave on by dt seconds and drive every joint toward its new target."""
@@ -307,15 +330,30 @@ class GaitController(SnakeControl):
         for i, module in enumerate(self.snake.modules):
             self.desire_angle[i] = self.am[i] * math.sin(2 * math.pi * self.sample_time / CYCLE + self.phi[i]) \
                 + self.offset[i]
-            self.set_hinge_angle(module.hinge, self.desire_angle[i])
+            self.set_hinge_angle(module.hinge, self.desire_angle[i], dt=dt)
 
     def pre(self, time):
         dt = time - self._time if self._time is not None else 0.0
         self._time = time
+        if self.robot_sensing is not None:
+            self.robot_sensing.sample(dt)
         if self.auto_slope and time >= self._next_check:
             self._next_check = time + 0.25
             self.measure_terrain()
-            wanted = self.choose_situation()
+            self.sim_wanted = self.choose_situation()
+            if self.robot_sensing is None:
+                wanted = self.sim_wanted
+            else:   # updateTerrain() in snake_sensors.ino
+                found = self.robot_sensing.update(0.25)
+                if found is None:
+                    self.slope = self.bend = 0.0
+                    wanted = 'flat'
+                else:
+                    self.slope, self.bend = found
+                    wanted = self.choose_situation()
+                if wanted == 'flat' and self.line_seen and 'maze' in self.gaits:
+                    wanted = 'maze'
+            self.wanted = wanted
             if wanted != self.situation and time - self._switched_at >= MIN_DWELL:
                 self.set_situation(wanted)
                 self._switched_at = time

@@ -15,7 +15,8 @@ import json
 import math
 import os
 
-TEXT = ('gait',)
+TEXT = ('gait', 'wanted', 'wanted_sim')
+SITUATIONS = ('flat', 'uphill', 'downhill', 'crest', 'valley')
 STEPS_PER_CYCLE = 12
 
 
@@ -119,6 +120,25 @@ def analyze(rows, finish_x=None, stall_seconds=15.0, stall_distance=0.02):
             marks.append((mark, r['t']))
             mark += 0.5
     out['marks'] = marks
+
+    # gait choice (logs from --sensing robot): the gait the robot's rule wanted against the one the
+    # world-based rule wanted, over the time neither was in the maze
+    out['choice'] = None
+    if 'wanted_sim' in rows[0] and any(r['wanted'] != r['wanted_sim'] or r['slope'] != r['slope_sim'] for r in rows):
+        table, total, same, slope_err, bend_err = {}, 0.0, 0.0, 0.0, 0.0
+        for a, b in zip(rows[:-1], rows[1:]):
+            if 'maze' in (a['wanted'], a['wanted_sim']):
+                continue
+            dt = b['t'] - a['t']
+            key = (a['wanted_sim'], a['wanted'])
+            table[key] = table.get(key, 0.0) + dt
+            total += dt
+            same += dt if a['wanted'] == a['wanted_sim'] else 0.0
+            slope_err += (a['slope'] - a['slope_sim']) ** 2 * dt
+            bend_err += (a['bend'] - a['bend_sim']) ** 2 * dt
+        if total > 0:
+            out['choice'] = dict(table=table, total=total, agree=same / total,
+                                 slope_rms=math.sqrt(slope_err / total), bend_rms=math.sqrt(bend_err / total))
     return out
 
 
@@ -158,6 +178,17 @@ def report(label, a):
     print('  {:5s} {:>12s} {:>13s} {:>18s} {:>10s}'.format('joint', 'at limit %', 'torque N m', 'off target deg', 'swing deg'))
     for i, s in enumerate(a['servo']):
         print('  {:5d} {:12.0f} {:13.3f} {:18.1f} {:10.0f}'.format(i, s['limit'], s['torque'], s['error'], s['swing']))
+
+    c = a.get('choice')
+    if c:
+        print('gait choice, robot rule (IMUs) against the world rule, outside the maze: same gait {:.0f}% of {:.0f} s; '
+              'slope differs by {:.1f} deg rms, bend by {:.1f} deg rms'.format(
+                  100 * c['agree'], c['total'], c['slope_rms'], c['bend_rms']))
+        names = [g for g in SITUATIONS if any(g in k for k in c['table'])]
+        print('  % of that time   ' + ''.join('{:>10s}'.format('robot ' + g[:4]) for g in names))
+        for world in names:
+            print('  world {:10s} '.format(world) + ''.join(
+                '{:10.0f}'.format(100 * c['table'].get((world, robot), 0.0) / c['total']) for robot in names))
 
 
 def compare(results):

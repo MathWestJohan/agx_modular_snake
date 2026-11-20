@@ -22,6 +22,10 @@ Columns:
     a0.., d0..           angle and target angle of every joint, degrees (joint 0 is next to the head)
     q0..                 mean servo torque since the last row, N m (absolute value)
     lim0..               share of the time since the last row that the servo was at its torque limit, %
+    wanted               the gait the controller's rule wants now (it switches only after MIN_DWELL)
+    slope_sim, bend_sim, wanted_sim   the same measured from the world (module positions, ground
+                         contacts); with --sensing sim they equal slope, bend and wanted, with
+                         --sensing robot they show what the robot's IMU estimates should have been
 """
 import csv
 import math
@@ -30,9 +34,9 @@ import os
 import agx
 import agxSDK
 
-from snakeapp.snake_control import MAX_TORQUE
+from snakeapp.snake_control import servo
 
-AT_LIMIT = 0.98   # of MAX_TORQUE
+AT_LIMIT = 0.98   # of the servo's stall torque
 
 
 def tilt_degrees(robot):
@@ -71,7 +75,8 @@ class RunLogger(agxSDK.StepEventListener):
             ['t', 'gait', 'x', 'y', 'z', 'tail_x', 'tail_y', 'tail_z', 'slope', 'bend', 'steer', 'heading',
              'tilt', 'rolled', 'steps']
             + ['a{}'.format(i) for i in range(n)] + ['d{}'.format(i) for i in range(n)]
-            + ['q{}'.format(i) for i in range(n)] + ['lim{}'.format(i) for i in range(n)])
+            + ['q{}'.format(i) for i in range(n)] + ['lim{}'.format(i) for i in range(n)]
+            + ['wanted', 'slope_sim', 'bend_sim', 'wanted_sim'])
         self._next = 0.0
         self._count = 0
         self._torque = [0.0] * n
@@ -83,7 +88,7 @@ class RunLogger(agxSDK.StepEventListener):
         for i, module in enumerate(self.robot.modules):
             torque = abs(module.hinge.getMotor1D().getCurrentForce())
             self._torque[i] += torque
-            if torque > AT_LIMIT * MAX_TORQUE:
+            if torque > AT_LIMIT * servo()['stall_torque']:
                 self._limit[i] += 1
         self._count += 1
         if time < self._next:
@@ -105,6 +110,8 @@ class RunLogger(agxSDK.StepEventListener):
         row += ['{:.1f}'.format(math.degrees(d)) for d in c.desire_angle]
         row += ['{:.3f}'.format(q / self._count) for q in self._torque]
         row += ['{:.0f}'.format(100.0 * k / self._count) for k in self._limit]
+        row += [c.wanted, '{:.2f}'.format(math.degrees(c.sim_slope)), '{:.2f}'.format(math.degrees(c.sim_bend)),
+                c.sim_wanted]
         self.writer.writerow(row)
         self._steps = c.steps
         self._count = 0

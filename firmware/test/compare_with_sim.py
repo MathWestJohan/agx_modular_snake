@@ -2,7 +2,9 @@
 
 Runs every gait of the simulation's tables through the simulation's GaitController and through the
 firmware's wave formula (host_test gait), and the gait choice over a grid of slopes and bends
-(host_test choose), and compares. Needs AGX, because it imports the simulation's controller.
+(host_test choose), and compares. Also checks that snakeapp/robot_sensing.py, which runs the robot's
+own slope estimate and crest/valley rule inside the simulation, gives the same numbers as the
+firmware (host_test slope, host_test terrain). Needs AGX, because it imports the simulation's controller.
 From the project root:
 
     python firmware/test/compare_with_sim.py path/to/host_test.exe
@@ -23,6 +25,7 @@ import agx  # noqa: E402
 _init = agx.AutoInit()
 
 from snakeapp.gait_controller import GAITS, GaitController  # noqa: E402
+from snakeapp import robot_sensing  # noqa: E402
 
 SITUATIONS = ['flat', 'uphill', 'downhill', 'crest', 'valley', 'maze']
 
@@ -92,6 +95,56 @@ def python_choose():
     return lines
 
 
+class _Lcg:
+    """Same pseudo-random numbers as rnd() in host_test.cpp."""
+    def __init__(self):
+        self.state = 12345
+
+    def __call__(self):
+        self.state = (self.state * 1103515245 + 12345) % 2147483648
+        return self.state / 2147483648.0
+
+
+def python_slope():
+    """Same cases as slope() in host_test.cpp."""
+    rnd = _Lcg()
+    lines = []
+    for config in ('PYPYP', 'PPYPP', 'YYPYY'):
+        n = len(config)
+        for k in range(200):
+            joints = [-60.0 + 120.0 * rnd() for _ in range(n)]
+            p, r = math.radians(-40.0 + 80.0 * rnd()), math.radians(-30.0 + 60.0 * rnd())
+            up = [math.sin(p), math.cos(p) * math.sin(r), math.cos(p) * math.cos(r)]
+            part, direction = (n if k % 2 else 0), (-1 if (k // 2) % 2 else 1)
+            lines.append((config, k, robot_sensing.body_slope_deg(config, joints, up, part, direction)))
+    return lines
+
+
+def python_terrain():
+    """Same sequence as terrain() in host_test.cpp."""
+    t = robot_sensing.Terrain()
+    lines = []
+    for k in range(400):
+        t.update(12.0 * math.sin(k * 0.05) + (8.0 if k > 200 else 0.0), 0.25, 20.0)
+        lines.append((k, t.slope, t.bend))
+    return lines
+
+
+def compare_numbers(name, expected, got, keys):
+    """expected: tuples (keys..., values...); got: lines 'keys... values...'. Largest difference."""
+    if len(got) != len(expected):
+        print('{}: {} lines from the firmware, {} from the simulation'.format(name, len(got), len(expected)))
+        return None
+    worst = 0.0
+    for want, line in zip(expected, got):
+        parts = line.split()
+        if parts[:keys] != [str(v) for v in want[:keys]]:
+            print('{}: out of step at {} -> {}'.format(name, want[:keys], line))
+            return None
+        worst = max([worst] + [abs(float(a) - b) for a, b in zip(parts[keys:], want[keys:])])
+    return worst
+
+
 def run(exe, mode):
     return subprocess.run([exe, mode], capture_output=True, text=True, check=True).stdout.splitlines()
 
@@ -130,6 +183,15 @@ def main():
     for w, g in differ[:10]:
         print('  simulation:', w, '| firmware:', g)
     ok = ok and not differ and len(got) == len(expected)
+
+    worst = compare_numbers('body slope', python_slope(), run(exe, 'slope'), 2)
+    print('body slope from the IMUs: 600 cases compared, largest difference {}'.format(
+        'n/a' if worst is None else '{:.4f} deg'.format(worst)))
+    ok = ok and worst is not None and worst < 1e-2
+    worst = compare_numbers('terrain', python_terrain(), run(exe, 'terrain'), 1)
+    print('slope filter and crest/valley bend: 400 steps compared, largest difference {}'.format(
+        'n/a' if worst is None else '{:.4f} deg'.format(worst)))
+    ok = ok and worst is not None and worst < 1e-2
 
     print('MATCHES THE SIMULATION' if ok else 'DOES NOT MATCH THE SIMULATION')
     sys.exit(0 if ok else 1)

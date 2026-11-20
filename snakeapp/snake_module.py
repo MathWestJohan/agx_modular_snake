@@ -9,7 +9,7 @@ import agxRender
 
 import snakeapp
 from snakeapp import add, load_shape, create_constraint, create_visual
-from snakeapp.snake_control import MAX_TORQUE
+from snakeapp import snake_control
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'environment', 'assets')
 print_density = 1240 * 0.75
@@ -32,6 +32,12 @@ DESIGN = 'v5'
 # put the real values here. The gaits were checked for 0.150 / 0.180 and 0.200 / 0.130 as well.
 HEAD_MASS = 0.177
 TAIL_MASS = 0.153
+
+# V5: the teeth (under the head and tail, and on the plates between the modules) are printed in a
+# rubber-like filament, TPU, for grip. They get their own material, so the scenes can give them more
+# friction than the PLA parts (course_scene.TEETH_FRICTION). Same density as the rest of the print,
+# so the snake's mass does not change. False: the teeth are PLA like everything else.
+RUBBER_TEETH = True
 
 
 def _shape(folder, name):
@@ -85,6 +91,11 @@ class Snake(agxSDK.Assembly):
         self.material.getBulkMaterial().setDensity(print_density)
         self.servo_material = agx.Material('servo_material')
         self.servo_material.getBulkMaterial().setDensity(servo_density)
+        # the teeth (V5): rubber-like TPU, see RUBBER_TEETH. With wheels the wheels take the contact.
+        self.teeth_material = None
+        if RUBBER_TEETH and not wheels:
+            self.teeth_material = agx.Material('snake_teeth')
+            self.teeth_material.getBulkMaterial().setDensity(print_density)
 
         self.modules = []
         self.extra_parts = []     # (body, geometry) of the head, tail, plates and teeth
@@ -163,9 +174,12 @@ class Snake(agxSDK.Assembly):
             if i == 0:
                 self._attach(module.bracket, 'head', self._end_material('head', HEAD_MASS, arm_material),
                              ARM_FACE, roll, HEAD_COLOR)
-                self._attach(module.bracket, 'head_teeth', arm_material, ARM_FACE, roll, TEETH_COLOR)
+                self._attach(module.bracket, 'head_teeth', self.teeth_material or arm_material, ARM_FACE, roll,
+                             TEETH_COLOR)
             else:   # bolt the arm, with the plate, to the previous module's cradle
-                self._attach(module.bracket, 'plate', arm_material, ARM_FACE, roll, PLATE_COLOR)
+                # only the plate's teeth reach the ground, so the whole plate gets the teeth's material
+                self._attach(module.bracket, 'plate', self.teeth_material or arm_material, ARM_FACE, roll,
+                             PLATE_COLOR)
                 merged = agx.MergedBody()
                 merged.add(agx.MergedBodyEmptyEdgeInteraction(module.bracket, self.modules[-1].cradle))
                 add(merged)
@@ -173,7 +187,8 @@ class Snake(agxSDK.Assembly):
                 tail_face = -CRADLE_FACE[cradles[i]]
                 self._attach(module.cradle, 'tail', self._end_material('tail', TAIL_MASS, cradle_material),
                              tail_face, roll, HEAD_COLOR)
-                self._attach(module.cradle, 'tail_teeth', cradle_material, tail_face, roll, TEETH_COLOR)
+                self._attach(module.cradle, 'tail_teeth', self.teeth_material or cradle_material, tail_face, roll,
+                             TEETH_COLOR)
             self.modules.append(module)
 
         # The parts of one snake never touch each other: they are bolted together or turn on a
@@ -257,9 +272,10 @@ class SnakeModule(agxSDK.Assembly):
         self.hinge = create_constraint(pos=agx.Vec3(0, 0, 0), axis=agx.Vec3(0, 0, -1),
                                        rb1=self.cradle, rb2=self.bracket, c=agx.Hinge)
         self.hinge.setCompliance(1E-12)
-        self.hinge.getMotor1D().setCompliance(1E-10)
+        self.hinge.getMotor1D().setCompliance(snake_control.servo_motor_compliance())   # see snake_control.SERVOS
         self.hinge.getMotor1D().setEnable(True)
-        self.hinge.getMotor1D().setForceRange(-MAX_TORQUE, MAX_TORQUE)
+        torque = snake_control.servo()["stall_torque"]
+        self.hinge.getMotor1D().setForceRange(-torque, torque)
         self.hinge.getLock1D().setEnable(False)
         self.hinge.getRange1D().setRange(-math.pi / 2, math.pi / 2)
 

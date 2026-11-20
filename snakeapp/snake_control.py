@@ -4,9 +4,70 @@ import agxSDK
 import math
 
 ERROR = math.pi*4.0/180.0
-MAX_SPD = math.pi/3.0/0.23           # Parallax 900-00005: 0.23 s/60 deg @ 4.8 V (0.19 s @ 6 V)
-MAX_TORQUE = 38.0*0.00706155          # Parallax 900-00005: 38 oz-in @ 6 V = 0.268 N m
 KP = 12
+
+# --- The servo: Parallax Standard Servo 900-00005, powered at 5 V by the M5Stack Servo2 ---
+#
+# 'dc' (default): a hobby servo is a DC motor behind a gearbox, driven by a controller whose power
+#   grows with the angle error. A DC motor's torque falls in a straight line with its speed:
+#       torque = stall_torque * (power - speed / no_load_speed),   power = error / full_power_error, in -1..1
+#   so it slows down as the load grows and reaches zero speed at the stall torque. An AGX Motor1D does
+#   exactly this when its compliance is no_load_speed / stall_torque (rad/s per N m) and its target
+#   speed is power * no_load_speed (checked on a test hinge: 25 / 50 / 75 / 90 % of the stall torque
+#   gave 75 / 50 / 25 / 10 % of the no-load speed). Under a steady load it also gives way a little,
+#   like the real servo, instead of holding its angle rigidly.
+#   Numbers at 5 V (the datasheet gives 4.8 V and 6 V): no-load 0.23 s/60 deg at 4.8 V and 0.19 s at
+#   6 V -> about 0.215 s; stall torque 38 oz-in (0.268 N m) at 6 V, and a DC motor's torque is
+#   proportional to its voltage -> 0.224 N m. full_power_error is a guess for a digital servo.
+#   Measure all three on the bench (README) and put the results here.
+# 'ideal': the model used before 2026-11-19, for comparison: the motor runs at any speed up to the
+#   4.8 V no-load speed and holds rigidly, with full 6 V torque, and only then gives way.
+SERVOS = {
+    'dc':    dict(no_load_speed=math.pi / 3.0 / 0.215, stall_torque=38.0 * 0.00706155 * 5.0 / 6.0,
+                  full_power_error=math.radians(3.0)),
+    'ideal': dict(no_load_speed=math.pi / 3.0 / 0.23, stall_torque=38.0 * 0.00706155,
+                  full_power_error=None),
+}
+SERVO_MODEL = 'dc'    # read when a snake is built and every control step; set it before building
+# The simulation commands the servo once per time step (60 Hz); a real servo's own loop runs much
+# faster. At full power the joint turns about 4.7 deg in one step, so a full_power_error below that
+# made the joint overshoot its target every step and chatter (PPYPP: 13 - 34 reversals a second at
+# 1.5 deg, none of it at the torque limit). So the speed asked for never carries the joint past its
+# target within one step. A side effect: the servo cannot hold stiffer than a full_power_error of
+# about 4.7 deg would, whatever smaller value is set (1.5 and 3 deg gave the same results).
+SERVO_NO_OVERSHOOT = True
+
+
+def servo():
+    """The servo model in use (a dict, see SERVOS)."""
+    return SERVOS[SERVO_MODEL]
+
+
+def servo_motor_compliance():
+    """Compliance of the hinge motor: the DC motor's speed-torque line, or rigid."""
+    s = servo()
+    return s['no_load_speed'] / s['stall_torque'] if s['full_power_error'] else 1E-10
+
+
+def drive_servo(hinge, target, dt=None):
+    """One control step of the servo's own controller: drive the hinge toward `target` (rad).
+    dt = the time step (s); with it, the speed asked for never carries the joint past its target
+    within one step (see SERVO_NO_OVERSHOOT)."""
+    s = servo()
+    error = target - hinge.getAngle()
+    if s['full_power_error']:
+        power = max(-1.0, min(1.0, error / s['full_power_error']))
+        speed = power * s['no_load_speed']
+        if SERVO_NO_OVERSHOOT and dt:
+            speed = max(-abs(error) / dt, min(abs(error) / dt, speed))
+        hinge.getMotor1D().setSpeed(speed)
+    else:
+        hinge.getMotor1D().setSpeed(max(-s['no_load_speed'], min(s['no_load_speed'], KP * error)))
+
+
+# kept for the original MechLab gaits below
+MAX_SPD = SERVOS['ideal']['no_load_speed']
+MAX_TORQUE = SERVOS['ideal']['stall_torque']
 REACHED = 1
 NOT_REACHED = 0
 

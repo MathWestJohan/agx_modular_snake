@@ -9,7 +9,11 @@ long cradle per module from the head), --head-mass / --tail-mass <kg> (V5, teeth
 snake_module.HEAD_MASS / TAIL_MASS, 0 = bare printed plastic), --friction <mu> (snake on the track),
 --quiet (only the gait switches and the summary), --slither <deg> (amplitude of the '+slither' snakes,
 e.g. --configs PYPYP PYPYP+slither), --log <folder> (one data log per snake plus run.json, for
-environment/analyze_run.py).
+environment/analyze_run.py), --sensing sim|robot (gait choice from the world, or from the robot's two
+IMUs as its firmware does it), --bend-rule average|halves (with --sensing robot: the firmware's
+crest/valley rule or the proposed one), --servo dc|ideal (servo model, snakeapp/snake_control.py),
+--teeth-friction <mu> (the rubber TPU teeth; 0 = PLA teeth), --track plateau|flat-start (hill track
+layout; default plateau, the real course).
 """
 import argparse
 import json
@@ -30,7 +34,7 @@ import snakeapp
 simulation = snakeapp.start_headless()
 
 import course_scene
-from snakeapp import gait_controller, snake_module
+from snakeapp import gait_controller, robot_sensing, snake_control, snake_module
 from snakeapp.run_logger import RunLogger, rolled_over
 
 STALL_DISTANCE = 0.02   # m of forward progress that ends a stall
@@ -110,6 +114,18 @@ def main():
     parser.add_argument('--friction', type=float, help='friction snake/track (default course_scene.FRICTION_TRACK)')
     parser.add_argument('--slither', type=float, help="yaw amplitude in degrees of the '+slither' snakes")
     parser.add_argument('--log', help='folder for one data log (CSV) per snake and run.json')
+    parser.add_argument('--sensing', choices=['sim', 'robot'],
+                        help="gait choice from the world ('sim', default) or from the robot's IMUs ('robot')")
+    parser.add_argument('--servo', choices=sorted(snake_control.SERVOS),
+                        help='servo model (default: snake_control.SERVO_MODEL)')
+    parser.add_argument('--track', choices=sorted(course_scene.TRACKS),
+                        help='hill track layout (default course_scene.TRACK_LAYOUT, the real course)')
+    parser.add_argument('--teeth-friction', type=float,
+                        help='friction of the rubber (TPU) teeth (default course_scene.TEETH_FRICTION; '
+                             '0 = PLA teeth like the rest)')
+    parser.add_argument('--bend-rule', choices=['average', 'halves'],
+                        help="with --sensing robot: the firmware's crest/valley rule ('average', default) "
+                             "or the proposed one ('halves'), see snakeapp/robot_sensing.py")
     args = parser.parse_args()
 
     if args.head_mass is not None:
@@ -118,6 +134,19 @@ def main():
         snake_module.TAIL_MASS = args.tail_mass or None
     if args.friction is not None:
         course_scene.FRICTION_TRACK = args.friction
+    if args.sensing:
+        course_scene.SENSING = args.sensing
+    if args.servo:
+        snake_control.SERVO_MODEL = args.servo
+    if args.bend_rule:
+        robot_sensing.BEND_RULE = args.bend_rule
+    if args.track:
+        course_scene.TRACK_LAYOUT = args.track
+    if args.teeth_friction is not None:
+        if args.teeth_friction > 0:
+            course_scene.TEETH_FRICTION = args.teeth_friction
+        else:
+            snake_module.RUBBER_TEETH = False
 
     if args.design:
         snake_module.DESIGN = args.design
@@ -176,7 +205,15 @@ def main():
                    head_mass=snake_module.HEAD_MASS, tail_mass=snake_module.TAIL_MASS, wheels=args.wheels,
                    friction_track=course_scene.FRICTION_TRACK, lookahead=course_scene.LOOKAHEAD,
                    slither_deg=round(math.degrees(course_scene.SLITHER), 1), gaits_deg=degrees,
-                   wave_hz=dict(gait_controller.WAVE_HZ),
+                   wave_hz=dict(gait_controller.WAVE_HZ), sensing=course_scene.SENSING,
+                   bend_rule=robot_sensing.BEND_RULE,
+                   teeth_friction=course_scene.TEETH_FRICTION if snake_module.RUBBER_TEETH else None,
+                   track_layout=course_scene.TRACK_LAYOUT if args.scene in ('hills', 'course') else None,
+                   track=course_scene.track_points() if args.scene in ('hills', 'course') else None,
+                   maze_start=(course_scene.track_points()[-1][0] + course_scene.MAZE_GAP if args.scene == 'course'
+                               else 0.0 if args.scene == 'maze' else None),
+                   servo=dict(snake_control.servo(), model=snake_control.SERVO_MODEL,
+                              no_overshoot=snake_control.SERVO_NO_OVERSHOOT),
                    snakes={p.runner.name: p.result() for p in progress})
         with open(os.path.join(args.log, 'run.json'), 'w') as out:
             json.dump(run, out, indent=2)
