@@ -20,7 +20,7 @@ CYCLE = 12.0
 # With the DC-motor servo model (snake_control.SERVOS) a servo has less torque the faster it turns, so
 # a faster wave is not simply faster. PYPYP at 0.75 kg (the real course, rubber teeth): with a
 # 35 deg valley wave at 0.55 Hz it stuck at the foot of the 14 deg ramp in 2 of 4 weight settings;
-# with the 45 deg valley wave at 0.45 Hz it finished in all 4 (473 - 579 s).
+# with the 45 deg valley wave at 0.45 Hz it finished in all 4 (453 - 583 s).
 # (With the earlier rigid servo model PYPYP 0.7 and PPYPP 1.3 still got faster.)
 WAVE_HZ = {'PPYPP': 0.8, 'PYPYP': 0.45, 'YYPYY': 0.6}
 
@@ -351,7 +351,7 @@ class GaitController(SnakeControl):
                 else:
                     self.slope, self.bend = found
                     wanted = self.choose_situation()
-                if wanted == 'flat' and self.line_seen and 'maze' in self.gaits:
+                if self.line_seen and 'maze' in self.gaits:   # in the maze, whatever the slope
                     wanted = 'maze'
             self.wanted = wanted
             if wanted != self.situation and time - self._switched_at >= MIN_DWELL:
