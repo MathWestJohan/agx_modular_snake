@@ -196,12 +196,20 @@ const char*    CAMERA_URL     = "http://192.168.4.50";   // camera's own page (f
 // (behind the last joint): the slope is worked out from there through the joint angles.
 const bool     START_SIM_GAIT   = false;      // true = "Sim gait" already on at power-up (course run!)
 const bool     SIM_CREST_VALLEY = true;       // false = only flat / uphill / downhill
-const float    SIM_BEND_TAU_S   = 20.0;       // crest/valley: the slope is compared with its own average
-                                              // over about this many seconds (tested in the simulation:
-                                              // misses slow valleys, see firmware/README.md)
+// Crest/valley: how the robot feels a hilltop or a valley under it ("bend").
+//   true:  the slope of the front half of the body (front IMU) minus that of the rear half (rear IMU),
+//          averaged over one wave cycle. In the simulation it got the snake over the course at every
+//          weight split. Needs both IMUs; with one missing it falls back to the rule below.
+//   false: the slope minus its own average over SIM_BEND_TAU_S. In the simulation it missed most
+//          valleys and the snake got stuck at the foot of the 14 deg ramp (see firmware/README.md).
+const bool     SIM_BEND_FROM_HALVES = true;
+const float    SIM_BEND_TAU_S   = 20.0;       // the older rule: average of the slope over about this long
 // Maze gait: line following on + the camera has seen the tape line in the last SIM_MAZE_LINE_MS
-// + flat ground -> the simulation's maze gait. The tape line only runs through the maze, so seeing
-// it means the snake is in the maze. (This used IR auto-steer before; the IR sensors are not used.)
+// -> the simulation's maze gait, whatever the slope. The tape line only runs through the (flat) maze,
+// so seeing it means the snake is in the maze. Not waiting for flat ground: entering the maze the
+// tail is still on the last down-ramp, and the simulated snake then went back to the bigger downhill
+// wave while the line steering turned it into the first corner, and rolled over.
+// (This used IR auto-steer before; the IR sensors are not used.)
 const bool     SIM_MAZE_WITH_LINE = true;
 const uint32_t SIM_MAZE_LINE_MS   = 5000;     // line not seen for this long -> back to the flat gait
 const uint32_t TERRAIN_MS       = 250;        // gait choice 4 times a second, as in the simulation
@@ -274,6 +282,10 @@ simterrain::Terrain terrain;                  // filtered slope and bend, degree
 bool     terrainOk = false;                   // the slope is being measured
 float    slopeSum = 0;                        // slope samples since the last gait choice
 int      slopeN = 0;
+float    halvesSum = 0;                       // SIM: front-half minus rear-half samples, same period
+int      halvesN = 0;
+simterrain::CycleAverage halvesCycle;         // SIM: the last wave cycle of those
+bool     bendFromHalves = false;              // SIM: the bend in use comes from the halves rule
 uint32_t lastTerrain = 0, simSwitchedMs = 0;
 
 // ---------------------------------------------------------------- sensors
@@ -667,6 +679,14 @@ void sampleSlope() {
   if (imuUp(frontImu, up) && simterrain::bodySlopeDeg(jointTypes, jointDeg, numJoints, up, 0, travelDir, one)) { sum += one; n++; }
   if (imuUp(rearImu, up) && simterrain::bodySlopeDeg(jointTypes, jointDeg, numJoints, up, numJoints, travelDir, one)) { sum += one; n++; }
   if (n) { slopeSum += sum / n; slopeN++; }
+
+  // the bend from the two halves of the body: needs both IMUs
+  float upHead[3], upTail[3], bend;
+  if (SIM_BEND_FROM_HALVES && imuUp(frontImu, upHead) && imuUp(rearImu, upTail) &&
+      simterrain::halvesBendDeg(jointTypes, jointDeg, numJoints, upHead, upTail, bend)) {
+    halvesSum += bend;
+    halvesN++;
+  }
 }
 
 // SIM: in the maze = following the line and the camera has seen it lately (the line is only there)
@@ -683,11 +703,20 @@ void updateTerrain(float dt) {
   slopeSum = 0;
   slopeN = 0;
 
+  // SIM_BEND_FROM_HALVES: the bend is the last wave cycle of front-half minus rear-half samples.
+  // Without them (an IMU missing) the older bend from terrain.update() stays.
+  if (halvesN > 0) halvesCycle.add(halvesSum / halvesN, simterrain::cycleSamples(frequencyHz, dt));
+  else halvesCycle.reset();
+  halvesSum = 0;
+  halvesN = 0;
+  bendFromHalves = terrainOk && halvesCycle.valid();
+  if (bendFromHalves) terrain.bend = halvesCycle.mean();
+
   int wanted = SIT_FLAT;                                  // also when "Sim gait" is off
   if (simActive()) {
     bool crestValley = SIM_CREST_VALLEY && simTable->gaits[SIT_CREST].valid && simTable->gaits[SIT_VALLEY].valid;
     if (terrainOk) wanted = terrain.choose(simSituation, crestValley);
-    if (wanted == SIT_FLAT && inMaze()) wanted = SIT_MAZE;
+    if (inMaze()) wanted = SIT_MAZE;                      // the line: in the maze, whatever the slope
     if (!simTable->gaits[wanted].valid) wanted = SIT_FLAT;
   }
   if (wanted == simSituation) return;
@@ -883,9 +912,11 @@ void printStatus() {
   Serial.printf("Asked: %s | amp %.0f | %.1f Hz | lag %.0f | %s | steer %.1f%s\n",
                 modeName(requestedMode), orderAmp(), frequencyHz, orderLag(),
                 travelDir > 0 ? "forward" : "backward", steerTarget(), src);
-  Serial.printf("Sim gait: %s | gait %s | pitch offset %.0f | slope %.1f | bend %.1f%s\n",   // SIM
+  Serial.printf("Sim gait: %s | gait %s | pitch offset %.0f | slope %.1f | bend %.1f%s%s\n",   // SIM
                 !simGait ? "off" : (simActive() ? "ON" : "on (not in its mode)"), SIM_SITUATION_NAMES[simSituation],
                 orderPitchOffset(), terrainOk ? terrain.slope : NAN, terrainOk ? terrain.bend : NAN,
+                !terrainOk ? "" : bendFromHalves ? " (front/rear halves)"
+                                : SIM_BEND_FROM_HALVES ? " (slope change: an IMU is missing)" : " (slope change)",
                 terrainOk ? "" : "  (no slope: needs the motor link and a calibrated IMU)");
   Serial.printf("Motor: link %s | active %s | ramp %.0f%% | Servo2 %s | bad frames %lu\n",
                 linkOk() ? "OK" : "LOST", modeName(motorMode), motorRamp * 100,
