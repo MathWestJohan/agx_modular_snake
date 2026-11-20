@@ -7,14 +7,14 @@ Its sensor ESP32 (firmware/snake_sensors) has:
   - the joint angles the motor ESP32 reports, which are the COMMANDED angles (the hobby servos
     report nothing back).
 From each accelerometer it takes the tilt of its own end, works the line tail -> head out through the
-joint angles, averages the two answers, and every 0.25 s filters that slope. It cannot feel a
-hilltop, so its "bend" is the slope minus its own slow average (20 s): it reacts to the slope
-CHANGING. That rule had never been run in the simulation before.
+joint angles, averages the two answers, and every 0.25 s filters that slope. It cannot feel the
+ground under it, so its "bend" (hilltop / valley) comes from the two IMUs: the slope of the front half
+of the body minus that of the rear half, averaged over one wave cycle (BEND_RULE, below).
 
 This file is a line-by-line copy of that code (snake_sensors.ino: imuUpdate, imuUp, sampleSlope,
-updateTerrain; sim_terrain.h: bodySlopeDeg, Terrain), fed with simulated accelerometers. Use it with
-GaitController(..., sensing='robot'); firmware/test/compare_with_sim.py checks that bodySlopeDeg and
-Terrain here give the same numbers as the C++.
+updateTerrain; sim_terrain.h: bodySlopeDeg, halvesBendDeg, CycleAverage, Terrain), fed with simulated
+accelerometers. Use it with GaitController(..., sensing='robot'); firmware/test/compare_with_sim.py
+checks that these functions give the same numbers as the C++.
 """
 import math
 import random
@@ -31,17 +31,19 @@ GRAVITY = 9.81
 # sensor's electrical noise is not known here, so it is off by default.
 ACCEL_NOISE = 0.0
 
-# How the hilltop / valley "bend" is found:
-#  'average' (the firmware's rule): the slope minus its own 20 s average. Tested on the course with
-#            the DC servo model: it missed nearly every valley for PYPYP (the snake climbs onto a ramp
-#            so slowly that the average keeps up). On the real course PPYPP finished in 3 and PYPYP in
-#            2 of 4 weight settings; it caught 26 - 36 % of the hilltops and 2 - 9 % of the valleys.
-#  'halves'  (PROPOSED, not in the firmware yet): the slope of the front half of the body (worked out
-#            from the head IMU through the joint angles) minus the slope of the rear half (from the
-#            tail IMU), averaged over exactly one wave cycle so that the wave's own bending cancels.
-#            Same course: PPYPP and PYPYP finished in all 4 weight settings, it caught 38 - 77 % of
-#            the hilltops and 34 - 51 % of the valleys, and on flat ground it never switched by mistake.
-BEND_RULE = 'average'
+# How the hilltop / valley "bend" is found (firmware: SIM_BEND_FROM_HALVES):
+#  'halves'  (the firmware's rule, SIM_BEND_FROM_HALVES = true): the slope of the front half of the
+#            body (worked out from the head IMU through the joint angles) minus the slope of the rear
+#            half (from the tail IMU), averaged over exactly one wave cycle so that the wave's own
+#            bending cancels. On the real course PPYPP and PYPYP finished in all 4 weight settings, it
+#            caught 38 - 77 % of the hilltops and 34 - 51 % of the valleys, and on flat ground it never
+#            switched by mistake.
+#  'average' (the older firmware rule, SIM_BEND_FROM_HALVES = false): the slope minus its own 20 s
+#            average. It missed most valleys (the snake climbs onto a ramp so slowly that the average
+#            keeps up, and while it is stuck the bend fades to zero). On the real course PPYPP finished
+#            in 4 and PYPYP in 2 of 4 weight settings; it caught 26 - 37 % of the hilltops and 1.5 - 9 %
+#            of the valleys.
+BEND_RULE = 'halves'
 
 
 # -- sim_terrain.h -------------------------------------------------------------------------------
@@ -99,8 +101,54 @@ def body_slope_deg(types, joint_deg, up, imu_part, travel_dir=1, first=0, last=N
     return math.degrees(math.atan2(rise, math.sqrt(sum(x * x for x in flat))))
 
 
+def halves_bend_deg(types, joint_deg, up_head, up_tail):
+    """halvesBendDeg: slope of the front half of the body (head IMU, joints 0 .. middle) minus that of
+    the rear half (tail IMU, joints middle .. last), degrees: > 0 valley, < 0 hilltop. Both measured
+    toward the head whatever way the snake crawls (the ground's bend does not depend on it).
+    None if either cannot be used."""
+    n = len(types)
+    if n < 2:
+        return None
+    mid = n // 2
+    front = body_slope_deg(types, joint_deg, up_head, 0, 1, 0, mid)
+    rear = body_slope_deg(types, joint_deg, up_tail, n, 1, mid, n - 1)
+    if front is None or rear is None:
+        return None
+    return front - rear
+
+
+class CycleAverage:
+    """CycleAverage: the last `keep` 0.25 s samples (one wave cycle) and their mean."""
+    MAX = 64
+
+    def __init__(self):
+        self.values = deque()
+
+    def reset(self):
+        self.values.clear()
+
+    def add(self, x, keep):
+        keep = max(1, min(self.MAX, keep))
+        self.values.append(x)
+        while len(self.values) > keep:
+            self.values.popleft()
+
+    def valid(self):
+        return bool(self.values)
+
+    def mean(self):
+        return sum(self.values) / len(self.values) if self.values else 0.0
+
+
+def cycle_samples(wave_hz, dt):
+    """cycleSamples: how many samples, dt s apart, make one wave cycle at wave_hz."""
+    if wave_hz <= 0 or dt <= 0:
+        return 1
+    return max(1, int(1.0 / wave_hz / dt + 0.5))
+
+
 class Terrain:
-    """Terrain: filtered slope and the bend as the slope minus its own slow average (degrees)."""
+    """Terrain: filtered slope and the older bend, the slope minus its own slow average (degrees)."""
 
     def __init__(self):
         self.reset()
@@ -187,7 +235,8 @@ class RobotSensing:
         self._count = 0
         self.slope_measured = None   # the last 0.25 s average, degrees
         self._halves_sum, self._halves_count = 0.0, 0
-        self._halves = deque()       # 'halves' rule: 0.25 s averages over the last wave cycle
+        self.halves_cycle = CycleAverage()   # 'halves' rule: the last wave cycle of 0.25 s averages
+        self.bend_from_halves = False
 
     def sample(self, dt):
         """Every time step: read both IMUs and add one slope sample (sampleSlope)."""
@@ -202,13 +251,10 @@ class RobotSensing:
             self._sum += sum(answers) / len(answers)
             self._count += 1
         if BEND_RULE == 'halves':
-            n, d = len(self.types), self.controller.direction
-            mid = n // 2
-            (head, head_part), (tail, tail_part) = self.imus
-            front = body_slope_deg(self.types, joint_deg, head.up_vector(), head_part, d, 0, mid)
-            rear = body_slope_deg(self.types, joint_deg, tail.up_vector(), tail_part, d, mid, n - 1)
-            if front is not None and rear is not None:
-                self._halves_sum += front - rear
+            (head, _), (tail, _) = self.imus
+            bend = halves_bend_deg(self.types, joint_deg, head.up_vector(), tail.up_vector())
+            if bend is not None:
+                self._halves_sum += bend
                 self._halves_count += 1
 
     def update(self, dt):
@@ -219,15 +265,14 @@ class RobotSensing:
         else:
             self.terrain.reset()
         self._sum, self._count = 0.0, 0
-        if BEND_RULE == 'halves':
-            if self._halves_count:
-                self._halves.append(self._halves_sum / self._halves_count)
-            self._halves_sum, self._halves_count = 0.0, 0
-            cycle = max(1, int(round(1.0 / self.controller.hz / dt)))   # samples in one wave cycle
-            while len(self._halves) > cycle:
-                self._halves.popleft()
-            if self._halves:
-                self.terrain.bend = sum(self._halves) / len(self._halves)
+        if self._halves_count:
+            self.halves_cycle.add(self._halves_sum / self._halves_count, cycle_samples(self.controller.hz, dt))
+        else:
+            self.halves_cycle.reset()
+        self._halves_sum, self._halves_count = 0.0, 0
+        self.bend_from_halves = self.terrain.valid and self.halves_cycle.valid()
+        if self.bend_from_halves:
+            self.terrain.bend = self.halves_cycle.mean()
         if not self.terrain.valid:
             return None
         return D(self.terrain.slope), D(self.terrain.bend)
