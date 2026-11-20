@@ -483,7 +483,7 @@ def chart_sensing(plt, runs, out, formats):
     plt.close(fig)
 
 
-RULE_NAMES = {'average': 'firmware rule', 'halves': 'proposed rule'}
+RULE_NAMES = {'average': 'old rule (slope change)', 'halves': 'new rule (body halves)'}
 
 
 def choice_table(rows):
