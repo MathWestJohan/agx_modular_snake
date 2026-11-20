@@ -54,6 +54,11 @@ LOG_DIR = None
 # commanded joint angles (snakeapp/robot_sensing.py). With 'robot' the maze gait comes on, as on the
 # robot, when the camera sees the tape line, which only runs through the maze.
 SENSING = 'sim'
+# How far ahead of the head (m, along the course) the camera sees the tape line, so how early the
+# robot switches to the maze gait. Not measured; 0.15 m is an assumption. With 0 (the head itself at
+# the maze), PYPYP as bare plastic was still in its big flat-ground wave while the steering turned it
+# toward the first maze leg, and rolled over at the maze entrance.
+CAMERA_VIEW_AHEAD = 0.15
 
 
 def base_config(name):
@@ -250,10 +255,13 @@ class CourseRunner(agxSDK.StepEventListener):
     def pre(self, time):
         head = self.robot.modules[0].cradle.getPosition()
 
-        if self.maze_start_x is not None and head.x() > self.maze_start_x:
+        if self.maze_start_x is not None:
             if self.controller.sensing == 'robot':
-                self.controller.line_seen = True   # the robot picks the maze gait itself
-            elif self.controller.situation != 'maze':
+                # the robot picks the maze gait itself once its camera sees the tape line, which starts
+                # at the maze entrance; the camera looks CAMERA_VIEW_AHEAD ahead of the head
+                if head.x() > self.maze_start_x - CAMERA_VIEW_AHEAD:
+                    self.controller.line_seen = True
+            elif head.x() > self.maze_start_x and self.controller.situation != 'maze':
                 self.controller.auto_slope = False
                 self.controller.set_situation('maze')
 

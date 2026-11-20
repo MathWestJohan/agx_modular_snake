@@ -10,10 +10,10 @@ snake_module.HEAD_MASS / TAIL_MASS, 0 = bare printed plastic), --friction <mu> (
 --quiet (only the gait switches and the summary), --slither <deg> (amplitude of the '+slither' snakes,
 e.g. --configs PYPYP PYPYP+slither), --log <folder> (one data log per snake plus run.json, for
 environment/analyze_run.py), --sensing sim|robot (gait choice from the world, or from the robot's two
-IMUs as its firmware does it), --bend-rule average|halves (with --sensing robot: the firmware's
-crest/valley rule or the proposed one), --servo dc|ideal (servo model, snakeapp/snake_control.py),
+IMUs as its firmware does it), --bend-rule halves|average (with --sensing robot: the firmware's
+crest/valley rule, or the older one), --servo dc|ideal (servo model, snakeapp/snake_control.py),
 --teeth-friction <mu> (the rubber TPU teeth; 0 = PLA teeth), --track plateau|flat-start (hill track
-layout; default plateau, the real course).
+layout; default plateau, the real course), --maze-width <m> (free width of the maze corridor).
 """
 import argparse
 import json
@@ -118,14 +118,16 @@ def main():
                         help="gait choice from the world ('sim', default) or from the robot's IMUs ('robot')")
     parser.add_argument('--servo', choices=sorted(snake_control.SERVOS),
                         help='servo model (default: snake_control.SERVO_MODEL)')
+    parser.add_argument('--maze-width', type=float,
+                        help='free width of the maze corridor in m (default course_scene.MAZE_WIDTH)')
     parser.add_argument('--track', choices=sorted(course_scene.TRACKS),
                         help='hill track layout (default course_scene.TRACK_LAYOUT, the real course)')
     parser.add_argument('--teeth-friction', type=float,
                         help='friction of the rubber (TPU) teeth (default course_scene.TEETH_FRICTION; '
                              '0 = PLA teeth like the rest)')
     parser.add_argument('--bend-rule', choices=['average', 'halves'],
-                        help="with --sensing robot: the firmware's crest/valley rule ('average', default) "
-                             "or the proposed one ('halves'), see snakeapp/robot_sensing.py")
+                        help="with --sensing robot: the firmware's crest/valley rule ('halves', default) "
+                             "or the older one ('average'), see snakeapp/robot_sensing.py")
     args = parser.parse_args()
 
     if args.head_mass is not None:
@@ -142,6 +144,8 @@ def main():
         robot_sensing.BEND_RULE = args.bend_rule
     if args.track:
         course_scene.TRACK_LAYOUT = args.track
+    if args.maze_width is not None:
+        course_scene.MAZE_WIDTH = args.maze_width
     if args.teeth_friction is not None:
         if args.teeth_friction > 0:
             course_scene.TEETH_FRICTION = args.teeth_friction
@@ -209,6 +213,8 @@ def main():
                    bend_rule=robot_sensing.BEND_RULE,
                    teeth_friction=course_scene.TEETH_FRICTION if snake_module.RUBBER_TEETH else None,
                    track_layout=course_scene.TRACK_LAYOUT if args.scene in ('hills', 'course') else None,
+                   maze_width=course_scene.MAZE_WIDTH if args.scene in ('maze', 'course') else None,
+                   camera_view_ahead=course_scene.CAMERA_VIEW_AHEAD if course_scene.SENSING == 'robot' else None,
                    track=course_scene.track_points() if args.scene in ('hills', 'course') else None,
                    maze_start=(course_scene.track_points()[-1][0] + course_scene.MAZE_GAP if args.scene == 'course'
                                else 0.0 if args.scene == 'maze' else None),
