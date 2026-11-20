@@ -5,6 +5,7 @@
 //   host_test choose   gait choice over a grid of slope and bend } on the simulation and compares
 //   host_test slope    body slope from random joint angles and tilts }  (snakeapp/robot_sensing.py
 //   host_test terrain  filtered slope and bend over a slope sequence }   runs these in the simulation)
+//   host_test halves   front/rear-halves bend, and its average over a wave cycle }
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -236,6 +237,58 @@ void terrain() {
     }
 }
 
+// keep in step with python_halves() in compare_with_sim.py
+void halves() {
+    const char* configs[] = {"PYPYP", "PPYPP", "YYPYY"};
+    lcgState = 54321;
+    for (const char* config : configs) {
+        const int n = (int)strlen(config);
+        for (int k = 0; k < 200; ++k) {
+            float joints[simterrain::MAX_JOINTS];
+            for (int j = 0; j < n; ++j) joints[j] = (float)(-50.0 + 100.0 * rnd());
+            float up[2][3];
+            for (int i = 0; i < 2; ++i) {
+                const double p = (-30.0 + 60.0 * rnd()) * kPi / 180.0, r = (-20.0 + 40.0 * rnd()) * kPi / 180.0;
+                up[i][0] = (float)sin(p);
+                up[i][1] = (float)(cos(p) * sin(r));
+                up[i][2] = (float)(cos(p) * cos(r));
+            }
+            float out = 0;
+            simterrain::halvesBendDeg(config, joints, n, up[0], up[1], out);
+            printf("%s %d %.4f\n", config, k, out);
+        }
+    }
+    // the cycle average: a bend that steps and a wave rate that changes
+    simterrain::CycleAverage c;
+    for (int k = 0; k < 300; ++k) {
+        const float hz = k < 100 ? 0.45f : (k < 200 ? 0.8f : 0.1f);
+        const float x = (float)(20.0 * sin(k * 0.7) + (k > 150 ? 12.0 : 0.0));
+        c.add(x, simterrain::cycleSamples(hz, 0.25f));
+        printf("c %d %.4f\n", k, c.mean());
+    }
+}
+
+void halvesChecks() {
+    // a straight snake lying on flat ground: no bend
+    const float straight[5] = {0, 0, 0, 0, 0};
+    const float level[3] = {0, 0, 1};
+    float bend = 99;
+    check(simterrain::halvesBendDeg("PYPYP", straight, 5, level, level, bend) && fabs(bend) < 1e-3,
+          "halves: straight and level -> no bend");
+    // the same snake bent up at the middle joint (U shape, both ends up 10 deg): a valley, bend 20 deg.
+    // Head part tilted 10 deg nose up, tail part 10 deg tail up (that is nose down, seen from the tail).
+    const float vee[5] = {0, 0, 20, 0, 0};
+    const float headUp[3] = {sinf(rad(10)), 0, cosf(rad(10))};
+    const float tailUp[3] = {sinf(rad(-10)), 0, cosf(rad(-10))};
+    check(simterrain::halvesBendDeg("PYPYP", vee, 5, headUp, tailUp, bend) && bend > 15 && bend < 25,
+          "halves: body bent up at the middle -> valley (bend > 0)");
+    near(bend, 20.0, 1.0, "halves: valley of 2 x 10 deg");
+    simterrain::CycleAverage c;
+    for (int k = 0; k < 9; ++k) c.add(k % 2 ? 10.0f : -10.0f, 2);
+    near(c.mean(), 0.0, 1e-4, "cycle average: keeps only the last cycle");
+    check(simterrain::cycleSamples(0.45f, 0.25f) == 9, "cycle average: 0.45 Hz = 9 samples of 0.25 s");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -256,8 +309,13 @@ int main(int argc, char** argv) {
         terrain();
         return 0;
     }
+    if (strcmp(mode, "halves") == 0) {
+        halves();
+        return 0;
+    }
     slopeChecks();
     terrainChecks();
+    halvesChecks();
     tableChecks();
     waveChecks();
     printf("%s\n", failures == 0 ? "all checks passed" : "SOME CHECKS FAILED");
