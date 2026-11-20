@@ -32,6 +32,11 @@ There are two hill track layouts (`TRACKS` in `environment/course_scene.py`):
 Pick one with `TRACK_LAYOUT`, or `--track flat-start` in the headless runner. The log's `run.json`
 records which one a run used.
 
+The maze has four straight legs of 0.6 m, turning 30° left, then right, and so on, between walls 0.2 m
+high and 0.30 m apart (`MAZE_WIDTH`, or `--maze-width`). With `--sensing robot` the snakes switch to the
+maze gait when the camera would see the tape line, which starts at the maze entrance; the camera is
+assumed to look 0.15 m ahead of the head (`CAMERA_VIEW_AHEAD`).
+
 ### How the wave runs
 
 The wave runs on the clock at `WAVE_HZ` cycles per second (PPYPP 0.8, PYPYP 0.45, YYPYY 0.6), like
@@ -59,24 +64,26 @@ Results on the real course at 0.75 kg (head-heavy, even, tail-heavy) and as bare
 
 | | Hills and maze | Maze |
 |---|---|---|
-| PPYPP | 328–386 s | 226–236 s |
-| PYPYP | 473–579 s | 354–389 s (after 55–89 s at the entrance) |
-| PYPYP+slither | 494–564 s | |
-| YYPYY, `--wheels` | | 309 s |
+| PPYPP | 330–378 s | 226–240 s |
+| PYPYP | 453–583 s | 267–297 s |
+| PYPYP+slither | 446–502 s | |
+| YYPYY, `--wheels` | | 238 s |
 
 ### The robot's own gait choice
 
 `--sensing robot` (or `SENSING` in `course_scene.py`) makes the snakes choose their gait the way the
 robot's sensor ESP32 does: from simulated accelerometers in the head and tail and the commanded joint
-angles, with the firmware's slope filter and its crest/valley rule (the slope minus its 20 s average),
-and the maze gait when the camera sees the tape line (`snakeapp/robot_sensing.py`, a copy of the
+angles, with the firmware's slope filter and its crest/valley rule, and the maze gait when the camera
+sees the tape line (`snakeapp/robot_sensing.py`, a copy of the
 firmware that `firmware/test/compare_with_sim.py` checks). The logs then also hold what the
 world-based rule would have chosen (`wanted_sim`), and `analyze_run.py` compares the two.
 
-Result: the robot's slope estimate is good (about 3° rms), but its crest/valley rule misses most
-valleys. On the real course PPYPP finished in 3 of 4 weight settings and PYPYP in 2. A proposed rule,
-`--bend-rule halves` (the slope of the front half of the body minus that of the rear half, averaged
-over one wave cycle), finished in all 4 (PPYPP 368–417 s, PYPYP 491–555 s). It is not in the firmware yet.
+The firmware's crest/valley rule compares the two halves of the body: the slope of the front half
+(head IMU) minus that of the rear half (tail IMU), averaged over one wave cycle (`--bend-rule halves`,
+the default). On the real course PPYPP and PYPYP finished in all 4 weight settings (PPYPP 381–434 s,
+PYPYP 470–541 s). The older rule, the slope minus its 20 s average (`--bend-rule average`), missed most
+valleys: PPYPP still finished in all 4 weight settings, but PYPYP in only 2. The robot's slope estimate is good
+(about 3° rms) with either rule.
 
 ### Slither
 
