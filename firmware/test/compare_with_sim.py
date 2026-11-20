@@ -130,6 +130,28 @@ def python_terrain():
     return lines
 
 
+def python_halves():
+    """Same cases as halves() in host_test.cpp."""
+    rnd = _Lcg()
+    rnd.state = 54321
+    lines = []
+    for config in ('PYPYP', 'PPYPP', 'YYPYY'):
+        n = len(config)
+        for k in range(200):
+            joints = [-50.0 + 100.0 * rnd() for _ in range(n)]
+            ups = []
+            for _ in range(2):
+                p, r = math.radians(-30.0 + 60.0 * rnd()), math.radians(-20.0 + 40.0 * rnd())
+                ups.append([math.sin(p), math.cos(p) * math.sin(r), math.cos(p) * math.cos(r)])
+            lines.append((config, k, robot_sensing.halves_bend_deg(config, joints, ups[0], ups[1])))
+    c = robot_sensing.CycleAverage()
+    for k in range(300):
+        hz = 0.45 if k < 100 else (0.8 if k < 200 else 0.1)
+        c.add(20.0 * math.sin(k * 0.7) + (12.0 if k > 150 else 0.0), robot_sensing.cycle_samples(hz, 0.25))
+        lines.append(('c', k, c.mean()))
+    return lines
+
+
 def compare_numbers(name, expected, got, keys):
     """expected: tuples (keys..., values...); got: lines 'keys... values...'. Largest difference."""
     if len(got) != len(expected):
@@ -190,6 +212,11 @@ def main():
     ok = ok and worst is not None and worst < 1e-2
     worst = compare_numbers('terrain', python_terrain(), run(exe, 'terrain'), 1)
     print('slope filter and crest/valley bend: 400 steps compared, largest difference {}'.format(
+        'n/a' if worst is None else '{:.4f} deg'.format(worst)))
+    ok = ok and worst is not None and worst < 1e-2
+
+    worst = compare_numbers('halves', python_halves(), run(exe, 'halves'), 2)
+    print('crest/valley bend from the body halves + cycle average: 900 cases compared, largest difference {}'.format(
         'n/a' if worst is None else '{:.4f} deg'.format(worst)))
     ok = ok and worst is not None and worst < 1e-2
 
