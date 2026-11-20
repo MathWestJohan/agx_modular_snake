@@ -197,8 +197,13 @@ const char*    CAMERA_URL     = "http://192.168.4.50";   // camera's own page (f
 const bool     START_SIM_GAIT   = false;      // true = "Sim gait" already on at power-up (course run!)
 const bool     SIM_CREST_VALLEY = true;       // false = only flat / uphill / downhill
 const float    SIM_BEND_TAU_S   = 20.0;       // crest/valley: the slope is compared with its own average
-                                              // over about this many seconds (not tested in the simulation yet)
-const bool     SIM_MAZE_WITH_IR = true;       // IR auto-steer on + flat ground -> the simulation's maze gait
+                                              // over about this many seconds (tested in the simulation:
+                                              // misses slow valleys, see firmware/README.md)
+// Maze gait: line following on + the camera has seen the tape line in the last SIM_MAZE_LINE_MS
+// + flat ground -> the simulation's maze gait. The tape line only runs through the maze, so seeing
+// it means the snake is in the maze. (This used IR auto-steer before; the IR sensors are not used.)
+const bool     SIM_MAZE_WITH_LINE = true;
+const uint32_t SIM_MAZE_LINE_MS   = 5000;     // line not seen for this long -> back to the flat gait
 const uint32_t TERRAIN_MS       = 250;        // gait choice 4 times a second, as in the simulation
 const float    SIM_BIG_WAVE_STEER_DEG = 10.0; // steering limit in the crest / valley gaits: full lock on
                                               // top of their big wave rolled the simulated snake over
@@ -664,6 +669,12 @@ void sampleSlope() {
   if (n) { slopeSum += sum / n; slopeN++; }
 }
 
+// SIM: in the maze = following the line and the camera has seen it lately (the line is only there)
+bool inMaze() {
+  return SIM_MAZE_WITH_LINE && lineFollow && camOk() && lastLineSeenMs != 0 &&
+         millis() - lastLineSeenMs < SIM_MAZE_LINE_MS;
+}
+
 // Called every TERRAIN_MS: filter the slope and choose the gait, like GaitController.pre()
 void updateTerrain(float dt) {
   terrainOk = slopeN > 0;
@@ -676,7 +687,7 @@ void updateTerrain(float dt) {
   if (simActive()) {
     bool crestValley = SIM_CREST_VALLEY && simTable->gaits[SIT_CREST].valid && simTable->gaits[SIT_VALLEY].valid;
     if (terrainOk) wanted = terrain.choose(simSituation, crestValley);
-    if (wanted == SIT_FLAT && SIM_MAZE_WITH_IR && autoSteer) wanted = SIT_MAZE;
+    if (wanted == SIT_FLAT && inMaze()) wanted = SIT_MAZE;
     if (!simTable->gaits[wanted].valid) wanted = SIT_FLAT;
   }
   if (wanted == simSituation) return;

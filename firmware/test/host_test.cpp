@@ -3,6 +3,8 @@
 //   host_test checks   body slope from the IMUs, crest detection, gait tables, wave direction
 //   host_test gait     joint angles of every gait in the table   } compare_with_sim.py runs the same
 //   host_test choose   gait choice over a grid of slope and bend } on the simulation and compares
+//   host_test slope    body slope from random joint angles and tilts }  (snakeapp/robot_sensing.py
+//   host_test terrain  filtered slope and bend over a slope sequence }   runs these in the simulation)
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -198,6 +200,42 @@ void choose() {
     }
 }
 
+// Same pseudo-random numbers as _Lcg in compare_with_sim.py
+unsigned long long lcgState = 12345;
+double rnd() {
+    lcgState = (lcgState * 1103515245ULL + 12345ULL) % 2147483648ULL;
+    return (double)lcgState / 2147483648.0;
+}
+
+// keep in step with python_slope() in compare_with_sim.py
+void slope() {
+    const char* configs[] = {"PYPYP", "PPYPP", "YYPYY"};
+    lcgState = 12345;
+    for (const char* config : configs) {
+        const int n = (int)strlen(config);
+        for (int k = 0; k < 200; ++k) {
+            float joints[simterrain::MAX_JOINTS];
+            for (int j = 0; j < n; ++j) joints[j] = (float)(-60.0 + 120.0 * rnd());
+            const double p = (-40.0 + 80.0 * rnd()) * kPi / 180.0, r = (-30.0 + 60.0 * rnd()) * kPi / 180.0;
+            const float up[3] = {(float)sin(p), (float)(cos(p) * sin(r)), (float)(cos(p) * cos(r))};
+            const int part = k % 2 ? n : 0, dir = (k / 2) % 2 ? -1 : 1;
+            float out = 0;
+            simterrain::bodySlopeDeg(config, joints, n, up, part, dir, out);
+            printf("%s %d %.4f\n", config, k, out);
+        }
+    }
+}
+
+// keep in step with python_terrain() in compare_with_sim.py
+void terrain() {
+    simterrain::Terrain t;
+    for (int k = 0; k < 400; ++k) {
+        const float s = (float)(12.0 * sin(k * 0.05) + (k > 200 ? 8.0 : 0.0));
+        t.update(s, 0.25f, 20.0f);
+        printf("%d %.4f %.4f\n", k, t.slope, t.bend);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -208,6 +246,14 @@ int main(int argc, char** argv) {
     }
     if (strcmp(mode, "choose") == 0) {
         choose();
+        return 0;
+    }
+    if (strcmp(mode, "slope") == 0) {
+        slope();
+        return 0;
+    }
+    if (strcmp(mode, "terrain") == 0) {
+        terrain();
         return 0;
     }
     slopeChecks();
