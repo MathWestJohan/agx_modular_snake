@@ -88,7 +88,7 @@ MAZE_GAP = 0.3
 MAZE_SEGMENTS = 4             # number of straight legs
 MAZE_SEGMENT_LENGTH = 0.6     # length of one leg along its centre line
 MAZE_ANGLE = math.radians(30) # each leg turns this much left, then right, ...
-MAZE_WIDTH = 0.15             # free width of the corridor
+MAZE_WIDTH = 0.30             # free width of the corridor (the real maze, user 2026-11-20; was 0.15)
 PLATE_HEIGHT = 0.2
 PLATE_THICKNESS = 0.02
 
@@ -308,10 +308,19 @@ def materials():
 
 
 # scenes
+def lane_spacing():
+    """Distance between lanes: LANE_SPACING, or more when the maze is so wide that the zigzag of one
+    lane would reach into the next."""
+    zigzag = MAZE_SEGMENT_LENGTH * math.sin(MAZE_ANGLE)                 # sideways reach of the centre line
+    walls = (MAZE_WIDTH / 2 + PLATE_THICKNESS) / math.cos(MAZE_ANGLE)  # centre line -> outside of a wall
+    return max(LANE_SPACING, zigzag + 2 * walls + 0.1)
+
+
 def lanes():
     """(configuration, y of its lane) for every snake, centred around y = 0."""
-    first = -LANE_SPACING * (len(CONFIGS) - 1) / 2
-    return [(config, first + k * LANE_SPACING) for k, config in enumerate(CONFIGS)]
+    spacing = lane_spacing()
+    first = -spacing * (len(CONFIGS) - 1) / 2
+    return [(config, first + k * spacing) for k, config in enumerate(CONFIGS)]
 
 
 def build_course(hills, maze, layout=None):
